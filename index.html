@@ -91,6 +91,7 @@
     position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
     margin: 0 auto; max-width: 480px; z-index: 10; padding: 12px 16px; border-radius: 12px;
     background: var(--fg); color: var(--bg); text-align: center; font-weight: 600;
+    pointer-events: none;
   }
 
   /* ---- scoring screen (spec 4, 6.1) ---- */
@@ -118,7 +119,7 @@
   .sheet { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 17px; font-variant-numeric: tabular-nums; }
   .sheet th, .sheet td { border-top: 1px solid var(--line); padding: 6px 2px; text-align: center; overflow: hidden; }
   .sheet thead th { font-size: 13px; font-weight: 600; color: var(--muted); padding: 6px 2px 4px; vertical-align: bottom; }
-  .sheet tbody th, .sheet tfoot th { width: 34px; color: var(--muted); font-weight: 600; font-size: 14px; }
+  .sheet thead th:first-child, .sheet tbody th, .sheet tfoot th { width: 48px; color: var(--muted); font-weight: 600; font-size: 14px; }
   .sheet td { height: 40px; }
   .sheet tfoot th, .sheet tfoot td { font-weight: 800; color: var(--fg); border-top: 2px solid var(--line); }
   .sheet .pn { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-size: 15px; font-weight: 700; }
@@ -152,7 +153,24 @@
   }
   .tool:disabled { opacity: .45; cursor: default; }
   .tool.menu-btn { flex: 0 0 64px; font-size: 22px; }
-  .menu { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .menu { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+
+  /* playoffs (spec 7.1): purple is never a player color */
+  .now.playoff { --pc: #5b2a86; --pi: #ffffff; }
+  .now.review { --pc: var(--accent); --pi: var(--accent-fg); cursor: pointer; }
+  .now.neutral { --pc: #4a5a52; --pi: #ffffff; }
+  .sheet tfoot tr.po th, .sheet tfoot tr.po td { font-weight: 600; border-top: 1px solid var(--line); }
+  .sheet tfoot tr.po th { font-size: 12px; white-space: nowrap; }
+  .sheet tfoot tr.po td { font-size: 16px; }
+  .sheet td.out { color: var(--muted); opacity: .45; background: color-mix(in srgb, var(--fg) 7%, transparent); }
+  .sheet tfoot tr.po td.cur { font-weight: 800; }
+
+  /* skip decision (spec 7.2): replaces the numpad */
+  .skip-sheet { display: flex; flex-direction: column; gap: 8px; }
+  .skip-sheet h2 { font-size: 1.1rem; margin: 0; }
+  .skip-list { list-style: none; margin: 0; padding: 0; font-size: 16px; }
+  .skip-list li { padding: 2px 0; }
+  .skip-sheet .btn.big { margin: 0; min-height: 60px; font-size: 19px; }
   body.scoring .toast { bottom: calc(var(--dock-h, 300px) + 12px); }
 </style>
 </head>
@@ -172,7 +190,7 @@
  *
  * Scoring (step 2): turn order and the cursor are derived from the scores, never
  * stored. Undo/redo and cell edits (step 3) live on the game as action stacks.
- * Step 4 adds playoffs, step 5 stats and replay.
+ * Step 4 adds playoffs, skip replay and end early. Step 5 adds stats.
  */
 const Golf = (() => {
   const SCHEMA_VERSION = 1;
@@ -416,6 +434,9 @@ const Golf = (() => {
         playoff: null,
       })),
       replayQueue: null,
+      skipsFinal: false,
+      awaitingFinish: false,
+      endedEarly: false,
       undo: [],
       redo: [],
     };
@@ -490,10 +511,123 @@ const Golf = (() => {
     };
   }
 
-  // STEP 4 HOOK: returns the id of the player who won this course's playoff, or null.
-  // standings() puts that player first when they are among the tied leaders.
-  function playoffWinnerId(game, ci) { // eslint-disable-line no-unused-vars
-    return null;
+  // ---- playoffs (spec 7.1) ---------------------------------------------------
+  // Derived from the regulation totals. Only the playoff entries are stored (in
+  // course.playoff). A stored playoff counts only while its playerIds still match
+  // the derived participants; otherwise it is stale and every entry reads as empty.
+
+  const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+
+  // Players tied for the lowest total among complete cards, in last-hole order.
+  // Empty unless every regulation cell of the course is filled.
+  function playoffParticipants(game, ci) {
+    if (!courseFilled(game, ci)) return [];
+    const course = getCourse(game.courses[ci].courseId);
+    const dir = course.lowerIsBetter ? 1 : -1;
+    const complete = game.playerIds
+      .map((id) => ({ id, total: courseTotal(game, ci, id) }))
+      .filter((r) => r.total.complete);
+    if (complete.length < 2) return [];
+    const best = Math.min(...complete.map((r) => dir * r.total.total));
+    const tied = complete.filter((r) => dir * r.total.total === best).map((r) => r.id);
+    if (tied.length < 2) return [];
+    const lastOrder = courseOrders(game, ci).slice(-1)[0];
+    return lastOrder.filter((id) => tied.includes(id));
+  }
+
+  // The stored playoff, but only while it is for these participants.
+  function livePlayoff(game, ci, participants) {
+    const stored = game.courses[ci].playoff;
+    return stored && sameSet(stored.playerIds, participants) ? stored : null;
+  }
+
+  // Value of playoff entry k (0-based) for a player, or null.
+  function playoffValue(po, pid, k) {
+    const row = po ? po.scores[pid] : undefined;
+    const v = row ? row[k] : undefined;
+    return v === undefined ? null : v;
+  }
+
+  // Derived playoff for course ci. rounds[k] lists the players who play playoff hole
+  // k + 1 in order, and who were eliminated on it. pending is the next entry to make,
+  // or null. winnerId is set once one player is left alive.
+  function playoffState(game, ci) {
+    const participants = playoffParticipants(game, ci);
+    const state = {
+      needed: participants.length >= 2,
+      participants,
+      alive: participants.slice(),
+      rounds: [],
+      holesPlayed: 0,
+      winnerId: null,
+      decidedOn: null,
+      pending: null,
+    };
+    if (!state.needed) return state;
+    const course = getCourse(game.courses[ci].courseId);
+    const dir = course.lowerIsBetter ? 1 : -1;
+    const pick = course.lowerIsBetter ? Math.min : Math.max;
+    const po = livePlayoff(game, ci, participants);
+    const valueOf = (pid, k) => playoffValue(po, pid, k);
+    let alive = participants.slice();
+    let order = participants.slice();
+    for (let k = 0; ; k += 1) {
+      if (k > 0) {
+        // Later holes: the alive players by their previous playoff score, stable.
+        const prev = k - 1;
+        order = sortStable(order.filter((id) => alive.includes(id)), (id) => {
+          const v = valueOf(id, prev);
+          return isNumber(v) ? [0, dir * v] : [1, 0];
+        });
+      }
+      const round = {
+        pIndex: k, hole: (k % course.holes) + 1, order: order.slice(), complete: false, eliminated: [],
+      };
+      state.rounds.push(round);
+      const missing = order.find((id) => valueOf(id, k) === null);
+      if (missing !== undefined) {
+        state.pending = { pIndex: k, hole: round.hole, playerId: missing };
+        break;
+      }
+      round.complete = true;
+      // The lowest number wins the hole and S is out. If every player entered S, nobody is out.
+      const numbers = order.map((id) => valueOf(id, k)).filter(isNumber);
+      const keep = numbers.length
+        ? order.filter((id) => valueOf(id, k) === pick(...numbers))
+        : order.slice();
+      round.eliminated = order.filter((id) => !keep.includes(id));
+      alive = keep;
+      state.holesPlayed += 1;
+      if (alive.length === 1) {
+        state.winnerId = alive[0];
+        state.decidedOn = k + 1;
+        break;
+      }
+    }
+    state.alive = alive;
+    return state;
+  }
+
+  // The playoff winner of course ci, or null. standings() puts them first among tied leaders.
+  function playoffWinnerId(game, ci) {
+    return playoffState(game, ci).winnerId;
+  }
+
+  // Before a write into a playoff, a stale or missing playoff is replaced by a fresh one.
+  function ensurePlayoff(game, ci) {
+    const participants = playoffParticipants(game, ci);
+    if (!livePlayoff(game, ci, participants)) {
+      game.courses[ci].playoff = { playerIds: participants, scores: {} };
+    }
+  }
+
+  // Writes playoff entry k (0-based) for a player. Expects a live playoff.
+  function writePlayoff(game, ci, pid, k, value) {
+    const po = game.courses[ci].playoff;
+    const row = po.scores[pid] ? po.scores[pid].slice() : [];
+    while (row.length < k) row.push(null);
+    row[k] = value;
+    po.scores[pid] = row;
   }
 
   // Final standings of a course: complete cards first, then by total, then by the
@@ -554,47 +688,145 @@ const Golf = (() => {
     return cells;
   }
 
-  // DERIVED, never stored: the first empty cell in play order, or null when every
-  // regulation cell is filled. STEP 4 HOOK: a pending playoff takes priority.
+  // Regulation skips in replay order: course, then hole, then column order.
+  function regulationSkips(game) {
+    const list = [];
+    game.courses.forEach((entry, ci) => {
+      const { holes } = getCourse(entry.courseId);
+      for (let h = 1; h <= holes; h += 1) {
+        game.playerIds.forEach((pid) => {
+          if (entry.scores[pid][h - 1] === 'S') list.push({ courseIndex: ci, hole: h, playerId: pid });
+        });
+      }
+    });
+    return list;
+  }
+
+  // True while a replay queue entry is waiting for this regulation cell.
+  function replayQueued(game, ci, hole, pid) {
+    return Array.isArray(game.replayQueue)
+      && game.replayQueue.some((c) => c.courseIndex === ci && c.hole === hole && c.playerId === pid);
+  }
+
+  // First unentered regulation cell of course ci in play order, or null.
+  function firstEmptyCell(game, ci) {
+    const orders = courseOrders(game, ci);
+    for (let h = 0; h < orders.length; h += 1) {
+      for (const pid of orders[h]) {
+        if (game.courses[ci].scores[pid][h] === null) return { courseIndex: ci, hole: h + 1, playerId: pid };
+      }
+    }
+    return null;
+  }
+
+  // DERIVED, never stored: the next cell to enter, or null when nothing is left.
+  // Course by course: its first empty regulation cell, then its pending playoff entry.
+  // The replay queue is only non-empty once every regulation cell is filled, and it
+  // comes before playoffs, so a replay that creates a tie waits until the replay ends.
   function cursor(game) {
-    const cell = playOrder(game).find((c) => game.courses[c.courseIndex].scores[c.playerId][c.hole - 1] === null);
-    return cell || null;
+    const queue = Array.isArray(game.replayQueue) ? game.replayQueue : [];
+    for (let ci = 0; ci < game.courses.length; ci += 1) {
+      const cell = firstEmptyCell(game, ci);
+      if (cell) return cell;
+      if (queue.length) continue;
+      const { pending } = playoffState(game, ci);
+      if (pending) {
+        return {
+          courseIndex: ci, hole: pending.hole, playerId: pending.playerId, playoff: true, pIndex: pending.pIndex,
+        };
+      }
+    }
+    if (queue.length) {
+      const head = queue[0];
+      return { courseIndex: head.courseIndex, hole: head.hole, playerId: head.playerId, replay: true };
+    }
+    return null;
+  }
+
+  // What the game needs next (spec 7, 7.2):
+  // 'play', 'playoff' or 'replay' while a cell is open; 'skipDecision' when everything is
+  // entered, regulation skips remain and the user has not decided; 'review' after a reopen
+  // with nothing left to enter; otherwise 'done'. An ended-early game is 'done'.
+  function gamePhase(game) {
+    if (game.endedEarly) return 'done';
+    const cur = cursor(game);
+    if (cur) {
+      if (cur.replay) return 'replay';
+      return cur.playoff ? 'playoff' : 'play';
+    }
+    if (game.replayQueue == null && game.skipsFinal !== true && regulationSkips(game).length > 0) {
+      return 'skipDecision';
+    }
+    return game.awaitingFinish ? 'review' : 'done';
   }
 
   // The player after the cursor in play order (for "next: Jo"), or null.
   function upNext(game, cur) {
-    if (!cur) return null;
+    if (!cur || cur.replay) return null;
+    if (cur.playoff) {
+      const round = playoffState(game, cur.courseIndex).rounds[cur.pIndex];
+      const i = round ? round.order.indexOf(cur.playerId) : -1;
+      return i >= 0 && round.order[i + 1] ? round.order[i + 1] : null;
+    }
     const cells = playOrder(game);
     const idx = cells.findIndex((c) => c.courseIndex === cur.courseIndex
       && c.hole === cur.hole && c.playerId === cur.playerId);
     return idx >= 0 && cells[idx + 1] ? cells[idx + 1].playerId : null;
   }
 
-  // ---- recording, editing, undo and redo (spec 6.3, 6.4) ----------------------
-  // An action is {type:'set', courseIndex, hole, playerId, prev, next}. Undo writes
-  // prev back into the cell, redo writes next. STEP 4 HOOK: playoff cells will add
-  // playoff: true, and writeCell() routes those to courses[ci].playoff.scores.
+  // ---- recording, editing, undo and redo (spec 6.3, 6.4, 7.1, 7.2) ------------
+  // An action is {type:'set', courseIndex, hole, playerId, prev, next}. Playoff entries
+  // add playoff: true, pIndex and playoffBefore (the playoff object before the write,
+  // restored by undo). Replay entries add replay: true. Undo puts their cell back at the
+  // head of replayQueue and redo takes it off again.
 
-  // Writes value into the cell an action points at.
-  function writeCell(game, action, value) {
-    game.courses[action.courseIndex].scores[action.playerId][action.hole - 1] = value;
+  // The value of the cell a cursor or an edit points at (null if not entered).
+  function cellValue(game, cur) {
+    if (cur.playoff) {
+      const po = livePlayoff(game, cur.courseIndex, playoffParticipants(game, cur.courseIndex));
+      return playoffValue(po, cur.playerId, cur.pIndex);
+    }
+    return game.courses[cur.courseIndex].scores[cur.playerId][cur.hole - 1];
   }
 
-  // Keeps status in line with the cells: an active game with no empty cell finishes,
-  // and a finished game with an empty cell (after an undo) becomes active again.
+  function actionFor(cur, prev, next) {
+    const action = {
+      type: 'set', courseIndex: cur.courseIndex, hole: cur.hole, playerId: cur.playerId, prev, next,
+    };
+    if (cur.playoff) {
+      action.playoff = true;
+      action.pIndex = cur.pIndex;
+    }
+    if (cur.replay) action.replay = true;
+    return action;
+  }
+
+  // Writes a value into the cell an action points at.
+  function writeCell(game, action, value) {
+    if (action.playoff) {
+      ensurePlayoff(game, action.courseIndex);
+      writePlayoff(game, action.courseIndex, action.playerId, action.pIndex, value);
+    } else {
+      game.courses[action.courseIndex].scores[action.playerId][action.hole - 1] = value;
+    }
+  }
+
+  // Keeps status in line with the phase: 'finished' exactly when the phase is 'done'.
+  // Ended-early games stay finished.
   function syncStatus(game, now) {
-    const open = cursor(game) !== null;
-    if (game.status === 'active' && !open) {
+    if (game.endedEarly) return;
+    const done = gamePhase(game) === 'done';
+    if (game.status === 'active' && done) {
       game.status = 'finished';
       game.finishedAt = now;
-    } else if (game.status === 'finished' && open) {
+    } else if (game.status === 'finished' && !done) {
       game.status = 'active';
       game.finishedAt = null;
     }
   }
 
-  // Records one score at the cursor. value is one of the course keys or 'S'.
-  // Returns a new state. When the last regulation cell is filled the game finishes.
+  // Records one score at the cursor (regulation, playoff or replay). value is one of the
+  // course keys or 'S'. Returns a new state. The last open cell finishes the game.
   function recordScore(state, gameId, value, now = null) {
     const game = getGame(state, gameId);
     if (!game || game.status !== 'active') throw new Error('No active game to score.');
@@ -606,15 +838,10 @@ const Golf = (() => {
     }
     const next = clone(state);
     const target = getGame(next, gameId);
-    const action = {
-      type: 'set',
-      courseIndex: cur.courseIndex,
-      hole: cur.hole,
-      playerId: cur.playerId,
-      prev: null,
-      next: value,
-    };
+    const action = actionFor(cur, cellValue(game, cur), value);
+    if (cur.playoff) action.playoffBefore = clone(target.courses[cur.courseIndex].playoff);
     writeCell(target, action, value);
+    if (cur.replay) target.replayQueue.shift();
     target.undo.push(action);
     target.redo = [];
     syncStatus(target, now);
@@ -622,15 +849,28 @@ const Golf = (() => {
   }
 
   // Overwrites a FILLED cell of an active game (spec 6.4). Undoable. Returns a new state.
-  function editScore(state, gameId, courseIndex, hole, playerId, value) {
+  // Playoff cells: pass pIndex (0-based) and the hole is ignored.
+  function editScore(state, gameId, courseIndex, hole, playerId, value, now = null, pIndex = null) {
     const game = getGame(state, gameId);
     if (!game || game.status !== 'active') throw new Error('No active game to edit.');
     const entry = game.courses[courseIndex];
-    const row = entry ? entry.scores[playerId] : null;
-    if (!Array.isArray(row) || !Number.isInteger(hole) || hole < 1 || hole > row.length) {
-      throw new Error('That cell is not on the card.');
+    if (!entry) throw new Error('That cell is not on the card.');
+    let cur;
+    if (pIndex !== null) {
+      const round = playoffState(game, courseIndex).rounds[pIndex];
+      if (!round || !round.order.includes(playerId)) throw new Error('That cell is not on the card.');
+      cur = { courseIndex, hole: round.hole, playerId, playoff: true, pIndex };
+    } else {
+      const row = entry.scores[playerId];
+      if (!Array.isArray(row) || !Number.isInteger(hole) || hole < 1 || hole > row.length) {
+        throw new Error('That cell is not on the card.');
+      }
+      if (replayQueued(game, courseIndex, hole, playerId)) {
+        throw new Error('Enter that hole with the numpad during the replay.');
+      }
+      cur = { courseIndex, hole, playerId };
     }
-    const prev = row[hole - 1];
+    const prev = cellValue(game, cur);
     if (prev === null) throw new Error('Only a filled cell can be edited.');
     const course = getCourse(entry.courseId);
     if (!(value === 'S' || course.keys.includes(value))) {
@@ -638,10 +878,12 @@ const Golf = (() => {
     }
     const next = clone(state);
     const target = getGame(next, gameId);
-    const action = { type: 'set', courseIndex, hole, playerId, prev, next: value };
+    const action = actionFor(cur, prev, value);
+    if (cur.playoff) action.playoffBefore = clone(target.courses[courseIndex].playoff);
     writeCell(target, action, value);
     target.undo.push(action);
     target.redo = [];
+    syncStatus(target, now);
     return next;
   }
 
@@ -656,27 +898,102 @@ const Golf = (() => {
     return !!game && (game.status === 'active' || game.status === 'finished') && game.redo.length > 0;
   }
 
-  // Restores the previous value of the last action. A finished game with an empty cell reopens.
+  // Restores the previous state of the last action and keeps the replay queue in step.
   function undo(state, gameId) {
     if (!canUndo(state, gameId)) throw new Error('Nothing to undo.');
     const next = clone(state);
     const game = getGame(next, gameId);
     const action = game.undo.pop();
-    writeCell(game, action, action.prev);
+    if (action.playoff) {
+      game.courses[action.courseIndex].playoff = clone(action.playoffBefore);
+    } else {
+      writeCell(game, action, action.prev);
+    }
+    if (action.replay && Array.isArray(game.replayQueue)) {
+      game.replayQueue.unshift({ courseIndex: action.courseIndex, hole: action.hole, playerId: action.playerId });
+    }
     game.redo.push(action);
     syncStatus(game, null);
     return next;
   }
 
-  // Re-applies the last undone action. If it fills the last cell, the game finishes at now.
+  // Re-applies the last undone action. If it finishes the last open cell, the game finishes at now.
   function redo(state, gameId, now = null) {
     if (!canRedo(state, gameId)) throw new Error('Nothing to redo.');
     const next = clone(state);
     const game = getGame(next, gameId);
     const action = game.redo.pop();
     writeCell(game, action, action.next);
+    if (action.replay && Array.isArray(game.replayQueue)) game.replayQueue.shift();
     game.undo.push(action);
     syncStatus(game, now);
+    return next;
+  }
+
+  // Replay (spec 7.2): offers every skipped regulation cell again, in replay order.
+  function startReplay(state, gameId) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active' || gamePhase(game) !== 'skipDecision') {
+      throw new Error('Replay is offered once every hole is scored and skips remain.');
+    }
+    const next = clone(state);
+    getGame(next, gameId).replayQueue = regulationSkips(game);
+    return next;
+  }
+
+  // Ends the skip decision with the skips left in place (spec 7.2).
+  function finishAnyway(state, gameId, now = null) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active' || gamePhase(game) !== 'skipDecision') {
+      throw new Error('There is no skip decision to make.');
+    }
+    const next = clone(state);
+    const target = getGame(next, gameId);
+    target.skipsFinal = true;
+    target.awaitingFinish = false;
+    syncStatus(target, now);
+    return next;
+  }
+
+  // End early (spec 7): unentered cells stay null, so those courses are incomplete.
+  function endEarly(state, gameId, now = null) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active') throw new Error('No active game to end.');
+    const next = clone(state);
+    const target = getGame(next, gameId);
+    target.status = 'finished';
+    target.endedEarly = true;
+    target.finishedAt = now;
+    return next;
+  }
+
+  // Reopens a finished game (spec 7). Abandons any other active game and offers the skip
+  // decision again. With nothing left to enter it waits in 'review' for finishGame.
+  function reopenGame(state, gameId) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'finished') throw new Error('Only a finished game can be reopened.');
+    const next = clone(state);
+    next.games.forEach((g) => { if (g.status === 'active') g.status = 'abandoned'; });
+    const target = getGame(next, gameId);
+    target.status = 'active';
+    target.finishedAt = null;
+    target.endedEarly = false;
+    target.skipsFinal = false;
+    target.replayQueue = null;
+    target.awaitingFinish = false;
+    next.currentGameId = gameId;
+    if (gamePhase(target) === 'done') target.awaitingFinish = true;
+    return next;
+  }
+
+  // Explicit finish for a reopened game in the 'review' phase.
+  function finishGame(state, gameId, now = null) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active' || gamePhase(game) !== 'review') throw new Error('Nothing to finish.');
+    const next = clone(state);
+    const target = getGame(next, gameId);
+    target.awaitingFinish = false;
+    syncStatus(target, now);
     return next;
   }
 
@@ -696,25 +1013,45 @@ const Golf = (() => {
     };
   }
 
-  // Winner of a course: exactly one complete player with the lowest total wins.
-  // Otherwise winnerId is null and leaders lists the tied players.
+  // Result of a course. The winner is the lone complete player with the lowest total, or
+  // the playoff winner when that total is tied (decidedBy 'playoff', decidedOn = P number).
+  // provisional: someone's card is still incomplete and the skip decision is not final.
+  // skips maps each player to their skip count on this course.
   function courseResult(game, ci) {
     const course = getCourse(game.courses[ci].courseId);
     const pick = course.lowerIsBetter ? Math.min : Math.max;
-    const rows = game.playerIds.map((id) => ({ id, ...courseTotal(game, ci, id) })).filter((r) => r.complete);
+    const all = game.playerIds.map((id) => ({ id, ...courseTotal(game, ci, id) }));
+    const rows = all.filter((r) => r.complete);
+    const skips = Object.fromEntries(all.map((r) => [r.id, r.skips]));
+    const incomplete = all.some((r) => !r.complete);
+    const provisional = incomplete && game.skipsFinal !== true && game.endedEarly !== true;
     if (rows.length === 0) {
-      return { winnerId: null, leaders: [], total: null, runnerUpTotal: null, tied: false };
+      return {
+        winnerId: null, leaders: [], total: null, runnerUpTotal: null, tied: false,
+        decidedBy: null, decidedOn: null, provisional, skips,
+      };
     }
     const best = pick(...rows.map((r) => r.total));
     const leaders = rows.filter((r) => r.total === best).map((r) => r.id);
     const others = rows.filter((r) => r.total !== best).map((r) => r.total);
-    return {
+    const result = {
       winnerId: leaders.length === 1 ? leaders[0] : null,
       leaders,
       total: best,
       runnerUpTotal: others.length ? pick(...others) : null,
       tied: leaders.length > 1,
+      decidedBy: leaders.length === 1 ? 'strokes' : null,
+      decidedOn: null,
+      provisional,
+      skips,
     };
+    if (leaders.length > 1) {
+      const ps = playoffState(game, ci);
+      if (ps.winnerId) {
+        Object.assign(result, { winnerId: ps.winnerId, decidedBy: 'playoff', decidedOn: ps.decidedOn });
+      }
+    }
+    return result;
   }
 
   // True when every cell of course ci is filled (skips count as filled).
@@ -734,6 +1071,8 @@ const Golf = (() => {
     courseTotal, turnOrder, standings, cursor, upNext, recordScore,
     editScore, canUndo, canRedo, undo, redo,
     priorHoleInfo, courseResult, courseFilled,
+    playoffState, playoffWinnerId, gamePhase, regulationSkips, replayQueued, cellValue,
+    startReplay, finishAnyway, endEarly, reopenGame, finishGame,
   };
 })();
 </script>
@@ -807,7 +1146,7 @@ const Golf = (() => {
     el.textContent = message;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 1300);
   }
 
   function setSaveBanner(show) {
@@ -944,30 +1283,65 @@ const Golf = (() => {
     return `${prior.label}: ${prior.total}${prior.skips ? '*' : ''}`;
   }
 
-  // Toast text when a course is finished. Uses the stored state, so the next course is known.
+  // Toast text when a course is finished or its playoff starts or ends. Uses the stored
+  // state, so the next course is known.
   function courseMessage(game, ci) {
     const course = Golf.getCourse(game.courses[ci].courseId);
     const r = Golf.courseResult(game, ci);
+    const ps = Golf.playoffState(game, ci);
+    if (ps.needed && !ps.winnerId) {
+      return `${course.name}: tie! Playoff: ${ps.participants.map(nameOf).join(' vs ')}`;
+    }
     const nextEntry = game.courses[ci + 1];
     const nextName = nextEntry ? Golf.getCourse(nextEntry.courseId).name : null;
     let core;
-    if (r.winnerId) {
-      const gap = r.runnerUpTotal !== null ? ` – ${r.runnerUpTotal}` : '';
-      core = `${course.name}: ${nameOf(r.winnerId)} wins, ${r.total}${gap}`;
-    } else if (r.tied) {
-      core = `${course.name}: tied for first at ${r.total}`;
+    if (r.decidedBy === 'playoff') {
+      core = `${nameOf(r.winnerId)} wins the ${course.name} playoff on P${r.decidedOn}`;
+    } else if (r.winnerId) {
+      const skipped = game.playerIds
+        .filter((id) => r.skips[id] > 0)
+        .map((id) => `${nameOf(id)} has ${r.skips[id]} skip${r.skips[id] > 1 ? 's' : ''}`);
+      if (r.provisional && skipped.length) {
+        core = `${course.name}: ${nameOf(r.winnerId)} leads (${skipped.join(', ')})`;
+      } else {
+        const gap = r.runnerUpTotal !== null ? ` – ${r.runnerUpTotal}` : '';
+        core = `${course.name}: ${nameOf(r.winnerId)} wins, ${r.total}${gap}`;
+      }
     } else {
       core = `${course.name}: no winner (skips)`;
     }
     return nextName ? `${core}. ${nextName} next` : core;
   }
 
+  // The toast after one numpad tap in scoring (not editing).
+  function pressMessage(before, after, cur, value) {
+    const ci = cur.courseIndex;
+    const label = `${nameOf(cur.playerId)} · ${value === 'S' ? 'skip' : value} ✓`;
+    if (cur.playoff) {
+      const decided = Golf.playoffState(after, ci);
+      if (decided.winnerId && !Golf.playoffState(before, ci).winnerId) return courseMessage(after, ci);
+      return label;
+    }
+    const justFinished = !Golf.courseFilled(before, ci) && Golf.courseFilled(after, ci);
+    const tieNow = !Golf.playoffState(before, ci).needed && Golf.playoffState(after, ci).needed;
+    return justFinished || tieNow ? courseMessage(after, ci) : label;
+  }
+
   // ---- views -----------------------------------------------------------------
 
   function summary(game) {
     const cur = Golf.cursor(game);
-    const course = cur ? Golf.getCourse(game.courses[cur.courseIndex].courseId) : null;
-    const parts = [course ? `${course.name}, hole ${cur.hole}` : 'Game complete'];
+    const phase = Golf.gamePhase(game);
+    let where = 'game complete';
+    if (cur) {
+      const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
+      where = cur.playoff ? `${course.name} playoff P${cur.pIndex + 1}` : `${course.name}, hole ${cur.hole}`;
+    } else if (phase === 'skipDecision') {
+      where = 'skips to decide';
+    } else if (phase === 'review') {
+      where = 'all scored';
+    }
+    const parts = [where];
     if (game.startedAt) parts.push(`started ${formatTime(game.startedAt)}`);
     return parts.join(' · ');
   }
@@ -1034,6 +1408,34 @@ const Golf = (() => {
       <p class="hint">Starting a game shuffles the hole 1 order.</p>`;
   }
 
+  // Ref for Golf.cellValue from the UI's editing state.
+  const cellRef = (e) => (e.pIndex === null
+    ? { courseIndex: e.courseIndex, hole: e.hole, playerId: e.playerId }
+    : {
+      courseIndex: e.courseIndex, hole: e.hole, playerId: e.playerId, playoff: true, pIndex: e.pIndex,
+    });
+
+  // Playoff rows for course ci, one per playoff hole that has started (spec 7.1). A
+  // player out of the playoff, or eliminated on that hole, is greyed out.
+  function playoffRows(game, ci, cur, ps) {
+    return ps.rounds.map((round) => {
+      const label = `P${round.pIndex + 1} · h${round.hole}`;
+      const cells = game.playerIds.map((id) => {
+        if (!round.order.includes(id)) return '<td class="out"></td>';
+        const v = Golf.cellValue(game, {
+          courseIndex: ci, hole: round.hole, playerId: id, playoff: true, pIndex: round.pIndex,
+        });
+        const isCur = !!cur && cur.playoff && cur.courseIndex === ci && cur.pIndex === round.pIndex && cur.playerId === id;
+        const isEdit = !!editing && editing.courseIndex === ci && editing.pIndex === round.pIndex && editing.playerId === id;
+        const out = round.eliminated.includes(id) ? 'out' : '';
+        const cls = [isCur ? 'cur' : '', isEdit ? 'editing' : '', out].filter(Boolean).join(' ');
+        const attrs = v === null ? '' : ` data-cell data-ci="${ci}" data-h="${round.hole}" data-pid="${esc(id)}" data-po="${round.pIndex}"`;
+        return `<td class="${cls}"${attrs}>${v === null ? '' : esc(v)}</td>`;
+      }).join('');
+      return `<tr class="po"><th scope="row">${label}</th>${cells}</tr>`;
+    }).join('');
+  }
+
   function renderCard(game, ci, cur) {
     const entry = game.courses[ci];
     const course = Golf.getCourse(entry.courseId);
@@ -1044,9 +1446,12 @@ const Golf = (() => {
     if (status === 'todo') {
       return `<section class="course todo"><div class="course-head static">${inner}</div></section>`;
     }
-    const open = cardOpen(ci, status);
     const here = !!cur && cur.courseIndex === ci;
-    const order = here ? Golf.turnOrder(game, ci, cur.hole) : null;
+    // The regular cursor on this course (not a playoff entry).
+    const regHere = here && !cur.playoff;
+    // A playoff or replay on this course keeps its card open.
+    const open = (here && (cur.playoff || cur.replay)) || cardOpen(ci, status);
+    const order = regHere && !cur.replay ? Golf.turnOrder(game, ci, cur.hole) : null;
     const head = `<button class="course-head" data-action="toggle-card" data-ci="${ci}" aria-expanded="${open}">${inner}</button>`;
     const names = game.playerIds.map((id) => {
       const badge = order ? `<span class="badge">${order.indexOf(id) + 1}</span>` : '';
@@ -1055,11 +1460,12 @@ const Golf = (() => {
     let body = '';
     if (open) {
       for (let h = 1; h <= course.holes; h += 1) {
-        const isNow = here && cur.hole === h;
+        const isNow = regHere && cur.hole === h;
         const cells = game.playerIds.map((id) => {
           const v = entry.scores[id][h - 1];
           const isCur = isNow && cur.playerId === id;
-          const isEdit = !!editing && editing.courseIndex === ci && editing.hole === h && editing.playerId === id;
+          const isEdit = !!editing && editing.pIndex === null && editing.courseIndex === ci
+            && editing.hole === h && editing.playerId === id;
           const cls = [isCur ? 'cur' : '', isEdit ? 'editing' : ''].filter(Boolean).join(' ');
           const cellAttrs = v === null ? '' : ` data-cell data-ci="${ci}" data-h="${h}" data-pid="${esc(id)}"`;
           return `<td class="${cls}"${cellAttrs}>${v === null ? '' : esc(v)}</td>`;
@@ -1071,63 +1477,156 @@ const Golf = (() => {
       const t = Golf.courseTotal(game, ci, id);
       return `<td>${t.total}${t.skips ? '*' : ''}</td>`;
     }).join('');
+    const ps = Golf.playoffState(game, ci);
+    const po = ps.needed ? playoffRows(game, ci, cur, ps) : '';
     return `<section class="course ${status}">${head}
       <table class="sheet">
         <thead><tr><th scope="col">#</th>${names}</tr></thead>
         <tbody>${body}</tbody>
-        <tfoot><tr><th scope="row">Tot</th>${totals}</tr></tfoot>
+        <tfoot><tr><th scope="row">Tot</th>${totals}</tr>${po}</tfoot>
       </table>
     </section>`;
   }
 
   // The bar in edit mode (spec 6.4): amber, names the cell, and tapping it cancels.
   function editBar(game) {
-    const { courseIndex: ci, hole, playerId } = editing;
+    const { courseIndex: ci, hole, playerId, pIndex } = editing;
     const course = Golf.getCourse(game.courses[ci].courseId);
     const t = Golf.courseTotal(game, ci, playerId);
-    const was = game.courses[ci].scores[playerId][hole - 1];
-    const par = course.par ? course.par[hole - 1] : null;
+    const was = Golf.cellValue(game, cellRef(editing));
+    const isPo = pIndex !== null;
+    const par = !isPo && course.par ? course.par[hole - 1] : null;
     const totalText = `${t.total}${t.skips ? '*' : ''}${course.par ? ` (${formatPar(t.vsPar)})` : ''}`;
-    return `<section class="now editing" data-action="stop-edit" aria-live="polite">
-          <div class="meta"><span>${esc(course.name)} · hole ${hole} / ${course.holes}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
-          <div class="who">Editing ${esc(nameOf(playerId))} · Hole ${hole}</div>
+    const where = isPo
+      ? `Playoff · ${course.name} hole ${hole} (P${pIndex + 1})`
+      : `${course.name} · hole ${hole} / ${course.holes}`;
+    const who = isPo ? `Editing ${esc(nameOf(playerId))}` : `Editing ${esc(nameOf(playerId))} · Hole ${hole}`;
+    return `<section class="now editing${isPo ? ' playoff' : ''}" data-action="stop-edit" aria-live="polite">
+          <div class="meta"><span>${esc(where)}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
+          <div class="who">${who}</div>
           <div class="meta"><span>Total ${totalText}</span><span>Current ${esc(valueLabel(was))}</span></div>
           <div class="meta next"><span>tap this bar or the cell again to cancel</span></div>
         </section>`;
   }
 
-  function viewScoring() {
-    const game = Golf.getActiveGame(state);
-    const cur = Golf.cursor(game);
+  // The now-up bar for a regulation cell.
+  function regularBar(game, cur) {
     const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
-    // While editing, the numpad and dock take the edited player's color.
-    const player = Golf.getPlayer(state, editing ? editing.playerId : cur.playerId);
+    const player = Golf.getPlayer(state, cur.playerId);
     const t = Golf.courseTotal(game, cur.courseIndex, cur.playerId);
     const prior = priorLabel(Golf.priorHoleInfo(game, cur));
     const nextId = Golf.upNext(game, cur);
     const par = course.par ? course.par[cur.hole - 1] : null;
     const totalText = `${t.total}${t.skips ? '*' : ''}${course.par ? ` (${formatPar(t.vsPar)})` : ''}`;
-    const keys = course.keys.map((k) => `<button class="key" data-key="${k}">${k}</button>`).join('')
-      + '<button class="key s" data-key="S" aria-label="Skip">S</button>';
-    const banner = Golf.hasAnyScore(game) ? '' : `<div class="banner-first">
-        <span>🎲 ${esc(Golf.firstOrderSentence(state, game))}</span>
-        <button class="link" data-action="reroll">Re-roll</button>
-      </div>`;
-    const cards = game.courses.map((_, ci) => renderCard(game, ci, cur)).join('');
-    const bar = editing ? editBar(game) : `<section class="now" aria-live="polite">
+    return `<section class="now" aria-live="polite">
           <div class="meta"><span>${esc(course.name)} · hole ${cur.hole} / ${course.holes}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
           <div class="who">${esc(player.name)} is up</div>
           <div class="meta"><span>Total ${totalText}</span><span>${esc(prior)}</span></div>
           ${nextId ? `<div class="meta next"><span>next: ${esc(nameOf(nextId))}</span></div>` : ''}
         </section>`;
+  }
+
+  // Replay (spec 7.2): "Replay · Adam · Mini Golf hole 4".
+  function replayBar(game, cur) {
+    const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
+    const player = Golf.getPlayer(state, cur.playerId);
+    const t = Golf.courseTotal(game, cur.courseIndex, cur.playerId);
+    const prior = priorLabel(Golf.priorHoleInfo(game, cur));
+    const totalText = `${t.total}${t.skips ? '*' : ''}${course.par ? ` (${formatPar(t.vsPar)})` : ''}`;
+    return `<section class="now" aria-live="polite">
+          <div class="meta"><span>Replay · ${esc(player.name)} · ${esc(course.name)} hole ${cur.hole}</span></div>
+          <div class="who">${esc(player.name)} is up</div>
+          <div class="meta"><span>Total ${totalText}</span><span>${esc(prior)}</span></div>
+        </section>`;
+  }
+
+  // Playoff (spec 7.1): purple, "Playoff · Mini Golf hole 1 (P1)" above "<Name> is up".
+  function playoffBar(game, cur) {
+    const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
+    const player = Golf.getPlayer(state, cur.playerId);
+    const t = Golf.courseTotal(game, cur.courseIndex, cur.playerId);
+    const totalText = `${t.total}${t.skips ? '*' : ''}${course.par ? ` (${formatPar(t.vsPar)})` : ''}`;
+    const k = cur.pIndex;
+    const prev = k > 0
+      ? `P${k}: ${valueLabel(Golf.cellValue(game, { courseIndex: cur.courseIndex, hole: cur.hole, playerId: cur.playerId, playoff: true, pIndex: k - 1 }))}`
+      : 'Playoff starts';
+    const nextId = Golf.upNext(game, cur);
+    return `<section class="now playoff" aria-live="polite">
+          <div class="meta"><span>Playoff · ${esc(course.name)} hole ${cur.hole} (P${k + 1})</span></div>
+          <div class="who">${esc(player.name)} is up</div>
+          <div class="meta"><span>Total ${totalText}</span><span>${esc(prev)}</span></div>
+          ${nextId ? `<div class="meta next"><span>next: ${esc(nameOf(nextId))}</span></div>` : ''}
+        </section>`;
+  }
+
+  // Everything is scored: tapping the bar finishes a reopened game (spec 7.2 / 7).
+  function reviewBar() {
+    return `<section class="now review" data-action="finish-game" role="button" tabindex="0" aria-live="polite">
+          <div class="meta"><span>All scored · Finish</span></div>
+          <div class="who">Finish game</div>
+          <div class="meta next"><span>tap to finish · tap any cell to change it</span></div>
+        </section>`;
+  }
+
+  // The skip decision (spec 7.2): replaces the numpad.
+  function skipSheet(game) {
+    const skipped = Golf.regulationSkips(game);
+    const lines = game.playerIds.map((id) => {
+      const parts = skipped.filter((c) => c.playerId === id).map((c) => {
+        const name = Golf.getCourse(game.courses[c.courseIndex].courseId).name;
+        return `${name} ${c.hole}`;
+      });
+      return parts.length ? `<li><strong>${esc(nameOf(id))}</strong>: ${esc(parts.join(', '))}</li>` : '';
+    }).join('');
+    return `<div class="skip-sheet" role="dialog" aria-label="Skipped holes">
+        <h2>Skipped holes</h2>
+        <ul class="skip-list">${lines}</ul>
+        <button class="btn big primary" data-action="replay-skips">Replay skipped holes</button>
+        <button class="btn big" data-action="finish-anyway">Finish anyway</button>
+      </div>`;
+  }
+
+  function viewScoring() {
+    const game = Golf.getActiveGame(state);
+    const cur = Golf.cursor(game);
+    const phase = Golf.gamePhase(game);
+    // The player whose color the bar and numpad take: the edited cell's, else the cursor's.
+    const colorId = editing ? editing.playerId : (cur ? cur.playerId : null);
+    const player = colorId ? Golf.getPlayer(state, colorId) : null;
+    const style = player
+      ? `--pc:${player.color};--pi:${inkFor(player.color)}`
+      : '--pc:var(--accent);--pi:var(--accent-fg)';
+    const keys = cur || editing
+      ? Golf.getCourse(game.courses[(editing || cur).courseIndex].courseId).keys
+        .map((k) => `<button class="key" data-key="${k}">${k}</button>`).join('')
+        + '<button class="key s" data-key="S" aria-label="Skip">S</button>'
+      : '';
+    const banner = Golf.hasAnyScore(game) ? '' : `<div class="banner-first">
+        <span>🎲 ${esc(Golf.firstOrderSentence(state, game))}</span>
+        <button class="link" data-action="reroll">Re-roll</button>
+      </div>`;
+    const cards = game.courses.map((_, ci) => renderCard(game, ci, cur)).join('');
+    let bar;
+    if (editing) bar = editBar(game);
+    else if (phase === 'review') bar = reviewBar();
+    else if (phase === 'skipDecision') {
+      bar = `<section class="now neutral"><div class="meta"><span>All holes scored</span></div>
+          <div class="who">Skipped holes</div>
+          <div class="meta next"><span>choose below</span></div></section>`;
+    } else if (phase === 'replay') bar = replayBar(game, cur);
+    else if (phase === 'playoff') bar = playoffBar(game, cur);
+    else bar = regularBar(game, cur);
+    const pad = phase === 'skipDecision'
+      ? skipSheet(game)
+      : `<div class="pad">${keys}</div>`;
     return `
-      <div class="scoring" style="--pc:${player.color};--pi:${inkFor(player.color)}">
+      <div class="scoring" style="${style}">
         ${banner}
         ${bar}
         ${cards}
         <div id="dock" class="dock">
-          ${menuOpen ? '<div class="menu"><button class="btn small" data-action="home">Home</button></div>' : ''}
-          <div class="pad">${keys}</div>
+          ${menuOpen ? '<div class="menu"><button class="btn small" data-action="end-early">End game early</button><button class="btn small" data-action="home">Home</button></div>' : ''}
+          ${pad}
           <div class="tools">
             <button class="tool" data-action="undo" ${Golf.canUndo(state, game.id) ? '' : 'disabled'}>↶ Undo</button>
             <button class="tool" data-action="redo" ${Golf.canRedo(state, game.id) ? '' : 'disabled'}>Redo ↷</button>
@@ -1143,9 +1642,13 @@ const Golf = (() => {
     const sections = game.courses.map((entry, ci) => {
       const course = Golf.getCourse(entry.courseId);
       const r = Golf.courseResult(game, ci);
-      let verdict = 'No winner (skips)';
+      if (!game.playerIds.some((id) => entry.scores[id].some((v) => v !== null))) {
+        return `<section class="card"><h2>${esc(course.name)}</h2><p class="hint">Not played</p></section>`;
+      }
+      let verdict = game.endedEarly ? 'Not finished' : 'No winner (skips)';
       if (r.winnerId) verdict = `${esc(nameOf(r.winnerId))} wins`;
       else if (r.tied) verdict = 'Tied for first';
+      if (r.decidedBy === 'playoff') verdict += ` · won in a playoff on P${r.decidedOn}`;
       const rows = Golf.standings(game, ci).map((id) => {
         const t = Golf.courseTotal(game, ci, id);
         const crown = id === r.winnerId ? ' 👑' : '';
@@ -1154,9 +1657,12 @@ const Golf = (() => {
       }).join('');
       return `<section class="card"><h2>${esc(course.name)}</h2><p class="hint">${verdict}</p><ul class="list">${rows}</ul></section>`;
     }).join('');
+    const note = game.endedEarly ? '<p class="hint">Ended early. Holes that were not scored are blank.</p>' : '';
     return `
       <header class="top"><h1>Game over</h1></header>
+      ${note}
       ${sections}
+      <button class="btn big" data-action="reopen">Reopen game</button>
       <button class="btn big primary" data-action="home">Home</button>`;
   }
 
@@ -1241,8 +1747,8 @@ const Golf = (() => {
   function editTargetOk() {
     const game = Golf.getActiveGame(state);
     if (!game || screen !== 'scoring' || !editing) return false;
-    const row = game.courses[editing.courseIndex] && game.courses[editing.courseIndex].scores[editing.playerId];
-    return Array.isArray(row) && row[editing.hole - 1] !== null && row[editing.hole - 1] !== undefined;
+    const v = Golf.cellValue(game, cellRef(editing));
+    return v !== null && v !== undefined;
   }
 
   // One numpad tap (pointer, keyboard digit, or S). Records the score at the cursor,
@@ -1250,8 +1756,12 @@ const Golf = (() => {
   function press(value) {
     if (screen !== 'scoring') return;
     const game = Golf.getActiveGame(state);
-    const cur = game ? Golf.cursor(game) : null;
-    if (!cur) return;
+    if (!game) return;
+    const cur = Golf.cursor(game);
+    if (!cur && !editing) {
+      toast('Every hole is scored. Tap a cell to change it, or Finish.');
+      return;
+    }
     if (Date.now() - lastScoreAt < FAT_FINGER_MS) return;
     const target = editing || cur;
     const course = Golf.getCourse(game.courses[target.courseIndex].courseId);
@@ -1259,7 +1769,7 @@ const Golf = (() => {
     let next;
     try {
       next = editing
-        ? Golf.editScore(state, game.id, editing.courseIndex, editing.hole, editing.playerId, value)
+        ? Golf.editScore(state, game.id, editing.courseIndex, editing.hole, editing.playerId, value, nowISO(), editing.pIndex)
         : Golf.recordScore(state, game.id, value, nowISO());
     } catch (e) {
       toast(e.message);
@@ -1267,19 +1777,17 @@ const Golf = (() => {
     }
     lastScoreAt = Date.now();
     navigator.vibrate?.(10);
+    const after = Golf.getGame(next, game.id);
     if (editing) {
-      const message = `${nameOf(editing.playerId)} · Hole ${editing.hole} → ${valueLabel(value)}`;
+      const where = editing.pIndex === null ? `Hole ${editing.hole}` : `P${editing.pIndex + 1}`;
+      const message = `${nameOf(editing.playerId)} · ${where} → ${valueLabel(value)}`;
       editing = null;
       menuOpen = false;
-      commit(next);
+      commit(next, after.status === 'finished' ? 'over' : null);
       toast(message);
       return;
     }
-    const after = Golf.getGame(next, game.id);
-    const justFinished = !Golf.courseFilled(game, cur.courseIndex) && Golf.courseFilled(after, cur.courseIndex);
-    const message = justFinished
-      ? courseMessage(after, cur.courseIndex)
-      : `${nameOf(cur.playerId)} · ${value === 'S' ? 'skip' : value} ✓`;
+    const message = pressMessage(game, after, cur, value);
     menuOpen = false;
     scrollPending = after.status === 'active';
     commit(next, after.status === 'finished' ? 'over' : null);
@@ -1313,14 +1821,21 @@ const Golf = (() => {
   }
 
   // Tapping a filled cell starts editing it, and tapping the same cell again cancels.
-  // Empty cells do nothing.
+  // Empty cells do nothing, and a skipped hole waiting in the replay queue is entered
+  // with the numpad during the replay.
   function tapCell(el) {
     const game = Golf.getActiveGame(state);
     if (!game) return;
-    const target = { courseIndex: Number(el.dataset.ci), hole: Number(el.dataset.h), playerId: el.dataset.pid };
-    if (game.courses[target.courseIndex].scores[target.playerId][target.hole - 1] === null) return;
+    const pIndex = el.dataset.po === undefined ? null : Number(el.dataset.po);
+    const target = {
+      courseIndex: Number(el.dataset.ci), hole: Number(el.dataset.h), playerId: el.dataset.pid, pIndex,
+    };
+    const v = Golf.cellValue(game, cellRef(target));
+    if (v === null || v === undefined) return;
+    if (pIndex === null && Golf.replayQueued(game, target.courseIndex, target.hole, target.playerId)) return;
     const same = !!editing && editing.courseIndex === target.courseIndex
-      && editing.hole === target.hole && editing.playerId === target.playerId;
+      && editing.hole === target.hole && editing.playerId === target.playerId
+      && editing.pIndex === target.pIndex;
     editing = same ? null : target;
     render();
   }
@@ -1377,6 +1892,59 @@ const Golf = (() => {
     commit(Golf.hidePlayer(state, id));
   }
 
+  // Replay, finish and reopen (spec 7, 7.2). Each one ends in the screen the phase needs.
+  function replaySkips() {
+    const game = Golf.getActiveGame(state);
+    if (!game) return;
+    try {
+      commit(Golf.startReplay(state, game.id));
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function finishAnyway() {
+    const game = Golf.getActiveGame(state);
+    if (!game) return;
+    try {
+      commit(Golf.finishAnyway(state, game.id, nowISO()), 'over');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function finishNow() {
+    const game = Golf.getActiveGame(state);
+    if (!game) return;
+    try {
+      commit(Golf.finishGame(state, game.id, nowISO()), 'over');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function endEarlyNow() {
+    const game = Golf.getActiveGame(state);
+    if (!game || !confirm('End this game now? Holes that were not scored stay blank.')) return;
+    try {
+      commit(Golf.endEarly(state, game.id, nowISO()), 'over');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function reopenNow() {
+    const id = state.currentGameId;
+    const others = state.games.some((g) => g.status === 'active' && g.id !== id);
+    if (others && !confirm('Another game is in progress. Abandon it and reopen this one?')) return;
+    try {
+      scrollPending = true;
+      commit(Golf.reopenGame(state, id), 'scoring');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
   // ---- events (delegated) ----------------------------------------------------
 
   // Taps score on pointerdown for an instant response.
@@ -1411,6 +1979,11 @@ const Golf = (() => {
       case 'stop-edit': editing = null; render(); break;
       case 'toggle-card': toggleCard(Number(el.dataset.ci)); break;
       case 'menu': menuOpen = !menuOpen; render(); break;
+      case 'end-early': menuOpen = false; endEarlyNow(); break;
+      case 'replay-skips': replaySkips(); break;
+      case 'finish-anyway': finishAnyway(); break;
+      case 'finish-game': finishNow(); break;
+      case 'reopen': reopenNow(); break;
       case 'edit': editingId = id; setupError = ''; render(); break;
       case 'cancel-edit': editingId = null; render(); break;
       case 'remove': removePlayer(id); break;
