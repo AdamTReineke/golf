@@ -9,7 +9,7 @@
   :root {
     --bg: #f5f7f5; --card: #ffffff; --fg: #14201a; --muted: #5a6a61; --line: #d6ded9;
     --accent: #1f7a4d; --accent-fg: #ffffff; --soft: #e6f1ea;
-    --error: #b3261e;
+    --error: #b3261e; --amber: #e8a317;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -128,6 +128,10 @@
   }
   .sheet tr.now-row th, .sheet tr.now-row td { background: color-mix(in srgb, var(--pc) 16%, transparent); }
   .sheet td.cur { outline: 2px solid var(--pc); outline-offset: -2px; font-weight: 800; background: color-mix(in srgb, var(--pc) 28%, transparent); }
+  .sheet td[data-cell] { cursor: pointer; }
+  .sheet td.editing { outline: 3px solid var(--amber); outline-offset: -3px; font-weight: 800; background: color-mix(in srgb, var(--amber) 28%, transparent); }
+  .now.editing { background: var(--amber); color: #14201a; cursor: pointer; }
+  .now.editing .who { font-size: 26px; }
   .dock {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; z-index: 6;
     width: 100%; max-width: 520px; background: var(--bg); border-top: 1px solid var(--line);
@@ -167,7 +171,8 @@
  * Randomness is injected as rand(): a function returning a float in [0, 1).
  *
  * Scoring (step 2): turn order and the cursor are derived from the scores, never
- * stored. Step 3 adds undo/redo, step 4 playoffs, step 5 stats and replay.
+ * stored. Undo/redo and cell edits (step 3) live on the game as action stacks.
+ * Step 4 adds playoffs, step 5 stats and replay.
  */
 const Golf = (() => {
   const SCHEMA_VERSION = 1;
@@ -565,6 +570,29 @@ const Golf = (() => {
     return idx >= 0 && cells[idx + 1] ? cells[idx + 1].playerId : null;
   }
 
+  // ---- recording, editing, undo and redo (spec 6.3, 6.4) ----------------------
+  // An action is {type:'set', courseIndex, hole, playerId, prev, next}. Undo writes
+  // prev back into the cell, redo writes next. STEP 4 HOOK: playoff cells will add
+  // playoff: true, and writeCell() routes those to courses[ci].playoff.scores.
+
+  // Writes value into the cell an action points at.
+  function writeCell(game, action, value) {
+    game.courses[action.courseIndex].scores[action.playerId][action.hole - 1] = value;
+  }
+
+  // Keeps status in line with the cells: an active game with no empty cell finishes,
+  // and a finished game with an empty cell (after an undo) becomes active again.
+  function syncStatus(game, now) {
+    const open = cursor(game) !== null;
+    if (game.status === 'active' && !open) {
+      game.status = 'finished';
+      game.finishedAt = now;
+    } else if (game.status === 'finished' && open) {
+      game.status = 'active';
+      game.finishedAt = null;
+    }
+  }
+
   // Records one score at the cursor. value is one of the course keys or 'S'.
   // Returns a new state. When the last regulation cell is filled the game finishes.
   function recordScore(state, gameId, value, now = null) {
@@ -578,12 +606,77 @@ const Golf = (() => {
     }
     const next = clone(state);
     const target = getGame(next, gameId);
-    target.courses[cur.courseIndex].scores[cur.playerId][cur.hole - 1] = value;
-    // STEP 3 HOOK: push {type:'set', course, hole, player, prev, next} onto target.undo and clear target.redo.
-    if (!cursor(target)) {
-      target.status = 'finished';
-      target.finishedAt = now;
+    const action = {
+      type: 'set',
+      courseIndex: cur.courseIndex,
+      hole: cur.hole,
+      playerId: cur.playerId,
+      prev: null,
+      next: value,
+    };
+    writeCell(target, action, value);
+    target.undo.push(action);
+    target.redo = [];
+    syncStatus(target, now);
+    return next;
+  }
+
+  // Overwrites a FILLED cell of an active game (spec 6.4). Undoable. Returns a new state.
+  function editScore(state, gameId, courseIndex, hole, playerId, value) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active') throw new Error('No active game to edit.');
+    const entry = game.courses[courseIndex];
+    const row = entry ? entry.scores[playerId] : null;
+    if (!Array.isArray(row) || !Number.isInteger(hole) || hole < 1 || hole > row.length) {
+      throw new Error('That cell is not on the card.');
     }
+    const prev = row[hole - 1];
+    if (prev === null) throw new Error('Only a filled cell can be edited.');
+    const course = getCourse(entry.courseId);
+    if (!(value === 'S' || course.keys.includes(value))) {
+      throw new Error(`Score must be one of ${course.keys.join(', ')} or S.`);
+    }
+    const next = clone(state);
+    const target = getGame(next, gameId);
+    const action = { type: 'set', courseIndex, hole, playerId, prev, next: value };
+    writeCell(target, action, value);
+    target.undo.push(action);
+    target.redo = [];
+    return next;
+  }
+
+  // Undo and redo work on active and finished games, so a finished game can be reopened.
+  function canUndo(state, gameId) {
+    const game = getGame(state, gameId);
+    return !!game && (game.status === 'active' || game.status === 'finished') && game.undo.length > 0;
+  }
+
+  function canRedo(state, gameId) {
+    const game = getGame(state, gameId);
+    return !!game && (game.status === 'active' || game.status === 'finished') && game.redo.length > 0;
+  }
+
+  // Restores the previous value of the last action. A finished game with an empty cell reopens.
+  function undo(state, gameId) {
+    if (!canUndo(state, gameId)) throw new Error('Nothing to undo.');
+    const next = clone(state);
+    const game = getGame(next, gameId);
+    const action = game.undo.pop();
+    writeCell(game, action, action.prev);
+    game.redo.push(action);
+    syncStatus(game, null);
+    return next;
+  }
+
+  // Re-applies the last undone action. If it fills the last cell, the game finishes at now.
+  function redo(state, gameId, now = null) {
+    if (!canRedo(state, gameId)) throw new Error('Nothing to redo.');
+    const next = clone(state);
+    const game = getGame(next, gameId);
+    const action = game.redo.pop();
+    writeCell(game, action, action.next);
+    game.undo.push(action);
+    syncStatus(game, now);
     return next;
   }
 
@@ -639,6 +732,7 @@ const Golf = (() => {
     canRerollFirstOrder, rerollFirstOrder,
     firstOrderNames, firstOrderSentence,
     courseTotal, turnOrder, standings, cursor, upNext, recordScore,
+    editScore, canUndo, canRedo, undo, redo,
     priorHoleInfo, courseResult, courseFilled,
   };
 })();
@@ -663,6 +757,7 @@ const Golf = (() => {
   let scrollPending = false;    // scroll the cursor into view on the next scoring render
   let menuOpen = false;         // the ⋯ menu above the tools row
   let overrides = new Map();    // course index -> {status, open}: a manual expand or collapse
+  let editing = null;           // {courseIndex, hole, playerId} while editing an earlier cell. Never saved.
   let lastScoreAt = 0;
   let lastPointerAt = 0;
   let wakeLock = null;
@@ -690,6 +785,7 @@ const Golf = (() => {
     return player ? player.name : '?';
   };
   const formatPar = (v) => (v === 0 ? 'E' : (v > 0 ? `+${v}` : `-${Math.abs(v)}`));
+  const valueLabel = (v) => (v === null ? '–' : (v === 'S' ? 'skip' : String(v)));
 
   // White or near-black text, whichever contrasts more with the background.
   const inkFor = (hex) => {
@@ -792,6 +888,7 @@ const Golf = (() => {
     screen = name;
     setupError = '';
     menuOpen = false;
+    editing = null;
     if (name === 'scoring') scrollPending = true;
     render();
     if (name !== 'scoring') window.scrollTo(0, 0);
@@ -962,7 +1059,10 @@ const Golf = (() => {
         const cells = game.playerIds.map((id) => {
           const v = entry.scores[id][h - 1];
           const isCur = isNow && cur.playerId === id;
-          return `<td class="${isCur ? 'cur' : ''}">${v === null ? '' : esc(v)}</td>`;
+          const isEdit = !!editing && editing.courseIndex === ci && editing.hole === h && editing.playerId === id;
+          const cls = [isCur ? 'cur' : '', isEdit ? 'editing' : ''].filter(Boolean).join(' ');
+          const cellAttrs = v === null ? '' : ` data-cell data-ci="${ci}" data-h="${h}" data-pid="${esc(id)}"`;
+          return `<td class="${cls}"${cellAttrs}>${v === null ? '' : esc(v)}</td>`;
         }).join('');
         body += `<tr class="${isNow ? 'now-row' : ''}"><th scope="row">${h}</th>${cells}</tr>`;
       }
@@ -980,11 +1080,28 @@ const Golf = (() => {
     </section>`;
   }
 
+  // The bar in edit mode (spec 6.4): amber, names the cell, and tapping it cancels.
+  function editBar(game) {
+    const { courseIndex: ci, hole, playerId } = editing;
+    const course = Golf.getCourse(game.courses[ci].courseId);
+    const t = Golf.courseTotal(game, ci, playerId);
+    const was = game.courses[ci].scores[playerId][hole - 1];
+    const par = course.par ? course.par[hole - 1] : null;
+    const totalText = `${t.total}${t.skips ? '*' : ''}${course.par ? ` (${formatPar(t.vsPar)})` : ''}`;
+    return `<section class="now editing" data-action="stop-edit" aria-live="polite">
+          <div class="meta"><span>${esc(course.name)} · hole ${hole} / ${course.holes}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
+          <div class="who">Editing ${esc(nameOf(playerId))} · Hole ${hole}</div>
+          <div class="meta"><span>Total ${totalText}</span><span>Current ${esc(valueLabel(was))}</span></div>
+          <div class="meta next"><span>tap this bar or the cell again to cancel</span></div>
+        </section>`;
+  }
+
   function viewScoring() {
     const game = Golf.getActiveGame(state);
     const cur = Golf.cursor(game);
     const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
-    const player = Golf.getPlayer(state, cur.playerId);
+    // While editing, the numpad and dock take the edited player's color.
+    const player = Golf.getPlayer(state, editing ? editing.playerId : cur.playerId);
     const t = Golf.courseTotal(game, cur.courseIndex, cur.playerId);
     const prior = priorLabel(Golf.priorHoleInfo(game, cur));
     const nextId = Golf.upNext(game, cur);
@@ -997,22 +1114,23 @@ const Golf = (() => {
         <button class="link" data-action="reroll">Re-roll</button>
       </div>`;
     const cards = game.courses.map((_, ci) => renderCard(game, ci, cur)).join('');
-    return `
-      <div class="scoring" style="--pc:${player.color};--pi:${inkFor(player.color)}">
-        ${banner}
-        <section class="now" aria-live="polite">
+    const bar = editing ? editBar(game) : `<section class="now" aria-live="polite">
           <div class="meta"><span>${esc(course.name)} · hole ${cur.hole} / ${course.holes}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
           <div class="who">${esc(player.name)} is up</div>
           <div class="meta"><span>Total ${totalText}</span><span>${esc(prior)}</span></div>
           ${nextId ? `<div class="meta next"><span>next: ${esc(nameOf(nextId))}</span></div>` : ''}
-        </section>
+        </section>`;
+    return `
+      <div class="scoring" style="--pc:${player.color};--pi:${inkFor(player.color)}">
+        ${banner}
+        ${bar}
         ${cards}
         <div id="dock" class="dock">
           ${menuOpen ? '<div class="menu"><button class="btn small" data-action="home">Home</button></div>' : ''}
           <div class="pad">${keys}</div>
           <div class="tools">
-            <button class="tool" disabled>↶ Undo</button>
-            <button class="tool" disabled>Redo ↷</button>
+            <button class="tool" data-action="undo" ${Golf.canUndo(state, game.id) ? '' : 'disabled'}>↶ Undo</button>
+            <button class="tool" data-action="redo" ${Golf.canRedo(state, game.id) ? '' : 'disabled'}>Redo ↷</button>
             <button class="tool menu-btn" data-action="menu" aria-expanded="${menuOpen}" aria-label="More">⋯</button>
           </div>
         </div>
@@ -1078,6 +1196,7 @@ const Golf = (() => {
       const current = Golf.getGame(state, state.currentGameId);
       screen = current && current.status === 'finished' ? 'over' : 'home';
     }
+    if (editing && !editTargetOk()) editing = null;
     document.body.classList.toggle('scoring', screen === 'scoring');
     app.innerHTML = VIEWS[screen]();
     if (screen === 'setup' && editingId) {
@@ -1118,24 +1237,44 @@ const Golf = (() => {
     }
   }
 
-  // One numpad tap (pointer, keyboard digit, or S). Records the score at the cursor.
+  // True while the edited cell still exists and holds a value in the active game.
+  function editTargetOk() {
+    const game = Golf.getActiveGame(state);
+    if (!game || screen !== 'scoring' || !editing) return false;
+    const row = game.courses[editing.courseIndex] && game.courses[editing.courseIndex].scores[editing.playerId];
+    return Array.isArray(row) && row[editing.hole - 1] !== null && row[editing.hole - 1] !== undefined;
+  }
+
+  // One numpad tap (pointer, keyboard digit, or S). Records the score at the cursor,
+  // or overwrites the edited cell while in edit mode.
   function press(value) {
     if (screen !== 'scoring') return;
     const game = Golf.getActiveGame(state);
     const cur = game ? Golf.cursor(game) : null;
     if (!cur) return;
     if (Date.now() - lastScoreAt < FAT_FINGER_MS) return;
-    const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
+    const target = editing || cur;
+    const course = Golf.getCourse(game.courses[target.courseIndex].courseId);
     if (value !== 'S' && !course.keys.includes(value)) return;
     let next;
     try {
-      next = Golf.recordScore(state, game.id, value, nowISO());
+      next = editing
+        ? Golf.editScore(state, game.id, editing.courseIndex, editing.hole, editing.playerId, value)
+        : Golf.recordScore(state, game.id, value, nowISO());
     } catch (e) {
       toast(e.message);
       return;
     }
     lastScoreAt = Date.now();
     navigator.vibrate?.(10);
+    if (editing) {
+      const message = `${nameOf(editing.playerId)} · Hole ${editing.hole} → ${valueLabel(value)}`;
+      editing = null;
+      menuOpen = false;
+      commit(next);
+      toast(message);
+      return;
+    }
     const after = Golf.getGame(next, game.id);
     const justFinished = !Golf.courseFilled(game, cur.courseIndex) && Golf.courseFilled(after, cur.courseIndex);
     const message = justFinished
@@ -1149,6 +1288,41 @@ const Golf = (() => {
 
   function keyValue(el) {
     return el.dataset.key === 'S' ? 'S' : Number(el.dataset.key);
+  }
+
+  // Undo or redo the last action. The toast names the score that was undone or redone.
+  function step(kind) {
+    const game = Golf.getGame(state, state.currentGameId);
+    if (!game) return;
+    const stack = kind === 'undo' ? game.undo : game.redo;
+    const action = stack[stack.length - 1];
+    if (!action) return;
+    let next;
+    try {
+      next = kind === 'undo' ? Golf.undo(state, game.id) : Golf.redo(state, game.id, nowISO());
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    const after = Golf.getGame(next, game.id);
+    editing = null;
+    menuOpen = false;
+    scrollPending = true;
+    commit(next, after.status === 'finished' ? 'over' : 'scoring');
+    toast(`${kind === 'undo' ? 'Undid' : 'Redid'} ${nameOf(action.playerId)} · ${valueLabel(action.next)}`);
+  }
+
+  // Tapping a filled cell starts editing it, and tapping the same cell again cancels.
+  // Empty cells do nothing.
+  function tapCell(el) {
+    const game = Golf.getActiveGame(state);
+    if (!game) return;
+    const target = { courseIndex: Number(el.dataset.ci), hole: Number(el.dataset.h), playerId: el.dataset.pid };
+    if (game.courses[target.courseIndex].scores[target.playerId][target.hole - 1] === null) return;
+    const same = !!editing && editing.courseIndex === target.courseIndex
+      && editing.hole === target.hole && editing.playerId === target.playerId;
+    editing = same ? null : target;
+    render();
   }
 
   function toggleCard(ci) {
@@ -1220,6 +1394,8 @@ const Golf = (() => {
       if (event.detail === 0 && Date.now() - lastPointerAt > POINTER_WINDOW_MS) press(keyValue(key));
       return;
     }
+    const cell = event.target.closest?.('td[data-cell]');
+    if (cell) { tapCell(cell); return; }
     const el = event.target.closest('[data-action]');
     if (!el) return;
     const { action, id } = el.dataset;
@@ -1230,6 +1406,9 @@ const Golf = (() => {
       case 'start': startNewGame(); break;
       case 'resume': go('scoring'); break;
       case 'reroll': reroll(); break;
+      case 'undo': step('undo'); break;
+      case 'redo': step('redo'); break;
+      case 'stop-edit': editing = null; render(); break;
       case 'toggle-card': toggleCard(Number(el.dataset.ci)); break;
       case 'menu': menuOpen = !menuOpen; render(); break;
       case 'edit': editingId = id; setupError = ''; render(); break;

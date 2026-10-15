@@ -501,3 +501,140 @@ test('courseResult: one complete lowest total wins; ties and skips are handled',
     winnerId: null, leaders: [], total: null, runnerUpTotal: null, tied: false,
   });
 });
+
+// ---- undo, redo and cell edits (step 3) ------------------------------------
+
+const LATEST = '2026-10-14T21:30:00.000Z';
+
+// Records each value at the cursor, in order.
+function record(state, gameId, values, now = NOW) {
+  return values.reduce((s, v) => Golf.recordScore(s, gameId, v, now), state);
+}
+
+// A 2-player game played to the end (52 cells). The last score finishes it at LATER.
+function finishedTwo() {
+  let state = Golf.newGame(withPlayers(['Sam', 'Adam']), seeded(3), NOW);
+  const gameId = state.currentGameId;
+  state = record(state, gameId, Array.from({ length: 52 }, (_, n) => 1 + (n % 8)), LATER);
+  return { state, gameId };
+}
+
+test('recordScore pushes a set action with prev null and clears redo', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam']);
+  state = record(state, gameId, [4, 5]);
+  state = Golf.undo(state, gameId);
+  assert.strictEqual(gameOf(state).redo.length, 1);
+  state = Golf.recordScore(state, gameId, 2, NOW);
+  const game = plain(gameOf(state));
+  assert.deepStrictEqual(game.undo[game.undo.length - 1], {
+    type: 'set', courseIndex: 0, hole: 1, playerId: id('Adam'), prev: null, next: 2,
+  });
+  assert.deepStrictEqual(game.redo, []);
+  assert.throws(() => Golf.redo(state, gameId), { message: /Nothing to redo/ });
+});
+
+test('undo x k then redo x k returns a deep-equal state, mid-game', () => {
+  let { state, gameId } = setup(['Sam', 'Adam', 'Jo']);
+  state = record(state, gameId, [3, 'S', 4, 2, 5, 1, 6]);
+  const before = plain(state);
+  let s = state;
+  for (let k = 0; k < 5; k += 1) s = Golf.undo(s, gameId);
+  for (let k = 0; k < 5; k += 1) s = Golf.redo(s, gameId, NOW);
+  assert.deepStrictEqual(plain(s), before);
+  assert.strictEqual(Golf.canRedo(s, gameId), false);
+});
+
+test('undo x k then redo x k returns a deep-equal state, through the finish', () => {
+  const { state: done, gameId } = finishedTwo();
+  let s = done;
+  for (let k = 0; k < 3; k += 1) s = Golf.undo(s, gameId);
+  assert.strictEqual(gameOf(s).status, 'active');
+  for (let k = 0; k < 3; k += 1) s = Golf.redo(s, gameId, LATER);
+  assert.deepStrictEqual(plain(s), plain(done));
+  assert.strictEqual(gameOf(s).finishedAt, LATER);
+});
+
+test('undo of the last score reopens a finished game, and redo finishes it again', () => {
+  let { state, gameId } = setup(['Sam']);
+  state = record(state, gameId, Array.from({ length: 26 }, () => 3), LATER);
+  assert.strictEqual(gameOf(state).status, 'finished');
+  let s = Golf.undo(state, gameId);
+  assert.strictEqual(gameOf(s).status, 'active');
+  assert.strictEqual(gameOf(s).finishedAt, null);
+  s = Golf.redo(s, gameId, LATEST);
+  assert.strictEqual(gameOf(s).status, 'finished');
+  assert.strictEqual(gameOf(s).finishedAt, LATEST);
+});
+
+test('undo across a course boundary returns the cursor to the previous course\'s last cell', () => {
+  let { state, gameId } = setup(['Sam', 'Adam']);
+  state = record(state, gameId, Array.from({ length: 18 }, () => 3));
+  assert.strictEqual(Golf.cursor(gameOf(state)).courseIndex, 1);
+  state = Golf.undo(state, gameId);
+  const game = gameOf(state);
+  const last = Golf.turnOrder(game, 0, 9).slice(-1)[0];
+  assert.deepStrictEqual(plain(Golf.cursor(game)), { courseIndex: 0, hole: 9, playerId: last });
+  assert.strictEqual(game.courses[0].scores[last][8], null);
+  assert.strictEqual(game.status, 'active');
+});
+
+test('editScore overwrites a filled cell without moving the cursor, and undo restores the old value', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam']);
+  state = record(state, gameId, [3, 4]);
+  const cursorBefore = plain(Golf.cursor(gameOf(state)));
+  state = Golf.editScore(state, gameId, 0, 1, id('Sam'), 5);
+  assert.strictEqual(gameOf(state).courses[0].scores[id('Sam')][0], 5);
+  // Hole 2 order follows hole 1, so Adam (4) now leads the cursor cell. The cursor is still derived.
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(state))), { courseIndex: 0, hole: 2, playerId: id('Adam') });
+  assert.strictEqual(plain(Golf.cursor(gameOf(state))).hole, cursorBefore.hole);
+  state = Golf.undo(state, gameId);
+  assert.strictEqual(gameOf(state).courses[0].scores[id('Sam')][0], 3);
+  state = Golf.redo(state, gameId);
+  assert.strictEqual(gameOf(state).courses[0].scores[id('Sam')][0], 5);
+});
+
+test('editScore rejects empty cells, invalid values, cells off the card, and inactive games', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam']);
+  state = record(state, gameId, [3]);
+  assert.throws(() => Golf.editScore(state, gameId, 0, 1, id('Adam'), 4), { message: /filled cell/ });
+  assert.throws(() => Golf.editScore(state, gameId, 0, 1, id('Sam'), 9), { message: /must be one of/ });
+  assert.throws(() => Golf.editScore(state, gameId, 0, 1, id('Sam'), '3'), { message: /must be one of/ });
+  assert.throws(() => Golf.editScore(state, gameId, 0, 10, id('Sam'), 3), { message: /not on the card/ });
+  assert.throws(() => Golf.editScore(state, 'g_missing', 0, 1, id('Sam'), 3), { message: /No active game/ });
+  const { state: done, gameId: doneId } = finishedTwo();
+  const sam = gameOf(done).playerIds[0];
+  assert.throws(() => Golf.editScore(done, doneId, 0, 1, sam, 3), { message: /No active game/ });
+});
+
+test('editing hole 3 changes the turn order of hole 4 when hole 4 is not yet played', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam', 'Jo'], { Sam: [3, 3, 3], Adam: [3, 3, 3], Jo: [3, 3, 3] });
+  assert.deepStrictEqual(names(state, Golf.turnOrder(gameOf(state), 0, 4)), ['Sam', 'Adam', 'Jo']);
+  state = Golf.editScore(state, gameId, 0, 3, id('Jo'), 2);
+  assert.deepStrictEqual(plain(names(state, Golf.turnOrder(gameOf(state), 0, 4))), ['Jo', 'Sam', 'Adam']);
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(state))), { courseIndex: 0, hole: 4, playerId: id('Jo') });
+});
+
+test('undo and redo are unavailable on a fresh game and on an abandoned game', () => {
+  let { state, gameId } = setup(['Sam', 'Adam']);
+  assert.strictEqual(Golf.canUndo(state, gameId), false);
+  assert.strictEqual(Golf.canRedo(state, gameId), false);
+  state = record(state, gameId, [3]);
+  state = Golf.newGame(state, seeded(9), NOW);
+  assert.strictEqual(Golf.getGame(state, gameId).status, 'abandoned');
+  assert.strictEqual(Golf.canUndo(state, gameId), false);
+  assert.throws(() => Golf.undo(state, gameId), { message: /Nothing to undo/ });
+});
+
+test('a JSON round trip (reload) keeps undo and redo working', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam', 'Jo']);
+  state = record(state, gameId, [3, 'S', 4, 2]);
+  state = Golf.editScore(state, gameId, 0, 1, id('Sam'), 5);
+  state = Golf.undo(state, gameId);
+  const reloaded = JSON.parse(JSON.stringify(state));
+  assert.strictEqual(Golf.canUndo(reloaded, gameId), true);
+  assert.strictEqual(Golf.canRedo(reloaded, gameId), true);
+  assert.deepStrictEqual(plain(Golf.undo(reloaded, gameId)), plain(Golf.undo(state, gameId)));
+  assert.deepStrictEqual(plain(Golf.redo(reloaded, gameId)), plain(Golf.redo(state, gameId)));
+  const migrated = Golf.migrate(JSON.parse(JSON.stringify(state)));
+  assert.deepStrictEqual(plain(Golf.undo(migrated, gameId)), plain(Golf.undo(state, gameId)));
+});
