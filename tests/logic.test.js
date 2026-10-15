@@ -313,13 +313,191 @@ test('firstOrderSentence reads like the spec banner', () => {
   assert.strictEqual(Golf.firstOrderSentence(state, game), 'Jo goes first');
 });
 
-test('naiveCursor points at the first empty hole, and null when the game is full', () => {
-  const state = Golf.newGame(withPlayers(['Sam']), seeded(1), NOW);
+// ---- scoring (step 2) ------------------------------------------------------
+
+const LATER = '2026-10-14T20:05:00.000Z';
+
+// A started game for the named players (roster order = names order), with
+// firstOrder set to that same order. scoresByName fills course ci from hole 1.
+function setup(names, scoresByName = {}, ci = 0) {
+  const state = plain(Golf.newGame(withPlayers(names), seeded(1), NOW));
+  const game = state.games.find((g) => g.id === state.currentGameId);
+  game.firstOrder = game.playerIds.slice();
+  const id = (name) => game.playerIds[names.indexOf(name)];
+  for (const [name, values] of Object.entries(scoresByName)) {
+    values.forEach((v, h) => { game.courses[ci].scores[id(name)][h] = v; });
+  }
+  return { state, id, gameId: state.currentGameId };
+}
+
+const names = (state, ids) => ids.map((pid) => Golf.getPlayer(state, pid).name);
+const fill = (value, holes = 9) => new Array(holes).fill(value);
+const gameOf = (state) => Golf.getGame(state, state.currentGameId);
+
+test('turnOrder: hole 1 of the first course is the random first order', () => {
+  const state = Golf.newGame(withPlayers(['Sam', 'Adam', 'Jo']), seeded(7), NOW);
   const game = plain(Golf.getActiveGame(state));
-  assert.deepStrictEqual(plain(Golf.naiveCursor(game)), { courseIndex: 0, courseId: 'redmond-mini', hole: 1 });
-  const id = game.playerIds[0];
-  game.courses.forEach((course) => {
-    course.scores[id] = course.scores[id].map(() => 2);
+  assert.deepStrictEqual(plain(Golf.turnOrder(game, 0, 1)), game.firstOrder);
+});
+
+test('turnOrder: hole N+1 sorts by hole N, and ties keep hole N order', () => {
+  const { state, id } = setup(['Sam', 'Adam', 'Jo'], { Sam: [3, 4], Adam: [2, 4], Jo: [3, 1] });
+  const game = gameOf(state);
+  assert.deepStrictEqual(names(state, Golf.turnOrder(game, 0, 2)), ['Adam', 'Sam', 'Jo']);
+  // Hole 2 order is Adam, Sam, Jo. Adam and Sam tie on hole 2, so Adam stays ahead of Sam.
+  assert.deepStrictEqual(names(state, Golf.turnOrder(game, 0, 3)), ['Jo', 'Adam', 'Sam']);
+  assert.strictEqual(id('Jo'), Golf.turnOrder(game, 0, 3)[0]);
+});
+
+test('turnOrder: S ranks worst, and several skips keep their relative order', () => {
+  const one = setup(['Sam', 'Adam', 'Jo'], { Sam: ['S'], Adam: [4], Jo: [3] });
+  assert.deepStrictEqual(names(one.state, Golf.turnOrder(gameOf(one.state), 0, 2)), ['Jo', 'Adam', 'Sam']);
+  const two = setup(['Sam', 'Adam', 'Jo'], { Sam: ['S'], Adam: ['S'], Jo: [5] });
+  assert.deepStrictEqual(names(two.state, Golf.turnOrder(gameOf(two.state), 0, 2)), ['Jo', 'Sam', 'Adam']);
+});
+
+test('turnOrder: hole 1 of a later course follows the previous standings, incomplete cards last', () => {
+  // Sam 27, Adam 36, and Jo has the lowest total (16) but a skip, so Jo ranks last.
+  const { state } = setup(['Sam', 'Adam', 'Jo'], { Sam: fill(3), Adam: fill(4), Jo: [...fill(2, 8), 'S'] });
+  const game = gameOf(state);
+  assert.deepStrictEqual(names(state, Golf.standings(game, 0)), ['Sam', 'Adam', 'Jo']);
+  assert.deepStrictEqual(names(state, Golf.turnOrder(game, 1, 1)), ['Sam', 'Adam', 'Jo']);
+});
+
+test('standings: ties keep the previous course last-hole order, not the first-hole order', () => {
+  // Both end on 28. On hole 9 Adam (3) beats Sam (4) in the hole 8 order, so Adam is ahead.
+  const { state } = setup(['Sam', 'Adam'], {
+    Sam: [3, 3, 3, 3, 3, 3, 3, 4, 3],
+    Adam: [3, 3, 3, 3, 3, 3, 3, 3, 4],
   });
-  assert.strictEqual(Golf.naiveCursor(game), null);
+  const game = gameOf(state);
+  assert.deepStrictEqual(names(state, Golf.turnOrder(game, 0, 9)), ['Adam', 'Sam']);
+  assert.deepStrictEqual(names(state, Golf.standings(game, 0)), ['Adam', 'Sam']);
+});
+
+test('courseTotal: skips add nothing and mark the card incomplete; vsPar covers entered holes', () => {
+  const { state, id } = setup(['Sam', 'Adam'], { Sam: [3, 'S', 4] });
+  const game = gameOf(state);
+  assert.deepStrictEqual(plain(Golf.courseTotal(game, 0, id('Sam'))), {
+    total: 7, skips: 1, complete: false, vsPar: 1,
+  });
+  const full = setup(['Sam'], { Sam: fill(2, 8) }, 1);
+  const aces = gameOf(full.state);
+  assert.deepStrictEqual(plain(Golf.courseTotal(aces, 1, full.id('Sam'))), {
+    total: 16, skips: 0, complete: true, vsPar: null,
+  });
+  const done = setup(['Sam'], { Sam: fill(3) });
+  assert.deepStrictEqual(plain(Golf.courseTotal(gameOf(done.state), 0, done.id('Sam'))), {
+    total: 27, skips: 0, complete: true, vsPar: 0,
+  });
+});
+
+test('cursor is the first empty cell in turn order, and moves on as scores are entered', () => {
+  let { state, id, gameId } = setup(['Sam', 'Adam', 'Jo']);
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(state))), { courseIndex: 0, hole: 1, playerId: id('Sam') });
+  state = Golf.recordScore(state, gameId, 4, NOW);
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(state))), { courseIndex: 0, hole: 1, playerId: id('Adam') });
+  state = Golf.recordScore(state, gameId, 'S', NOW);
+  state = Golf.recordScore(state, gameId, 3, NOW);
+  // Hole 2 order from hole 1 (Sam 4, Adam S, Jo 3): Jo, Sam, Adam.
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(state))), { courseIndex: 0, hole: 2, playerId: id('Jo') });
+});
+
+test('cursor is null only after every regulation cell is filled', () => {
+  const partial = setup(['Sam'], { Sam: fill(2, 8) }, 0);
+  assert.deepStrictEqual(plain(Golf.cursor(gameOf(partial.state))), { courseIndex: 0, hole: 9, playerId: partial.id('Sam') });
+
+  const { state } = setup(['Sam'], { Sam: fill(2, 9) }, 0);
+  const full = plain(state);
+  const game = full.games.find((g) => g.id === full.currentGameId);
+  game.courses[1].scores[game.playerIds[0]].fill(2);
+  assert.notStrictEqual(Golf.cursor(game), null, 'Duffleboard is still open');
+  game.courses[2].scores[game.playerIds[0]].fill(2);
+  assert.strictEqual(Golf.cursor(game), null);
+});
+
+test('upNext names the player after the cursor in play order', () => {
+  const { state, id } = setup(['Sam', 'Adam', 'Jo']);
+  const game = gameOf(state);
+  assert.strictEqual(Golf.upNext(game, Golf.cursor(game)), id('Adam'));
+  assert.strictEqual(Golf.upNext(game, null), null);
+});
+
+test('recordScore validates the value and the game, and does not mutate its input', () => {
+  const { state, gameId } = setup(['Sam', 'Adam']);
+  const before = JSON.stringify(state);
+  assert.throws(() => Golf.recordScore(state, gameId, 9, NOW), { message: /must be one of/ });
+  assert.throws(() => Golf.recordScore(state, gameId, 0, NOW), { message: /must be one of/ });
+  assert.throws(() => Golf.recordScore(state, gameId, 'x', NOW), { message: /must be one of/ });
+  assert.throws(() => Golf.recordScore(state, 'g_missing', 3, NOW), { message: /No active game/ });
+  const next = Golf.recordScore(state, gameId, 3, NOW);
+  assert.strictEqual(JSON.stringify(state), before);
+  assert.strictEqual(gameOf(next).courses[0].scores[plain(gameOf(state)).playerIds[0]][0], 3);
+});
+
+test('recordScore records S as a skip, which is not a number', () => {
+  const { state, id, gameId } = setup(['Sam']);
+  const next = Golf.recordScore(state, gameId, 'S', NOW);
+  assert.strictEqual(gameOf(next).courses[0].scores[id('Sam')][0], 'S');
+});
+
+test('a full 2-player game reaches finished after exactly 52 recordScore calls', () => {
+  let state = Golf.newGame(withPlayers(['Sam', 'Adam']), seeded(3), NOW);
+  const gameId = state.currentGameId;
+  for (let n = 1; n <= 52; n += 1) {
+    state = Golf.recordScore(state, gameId, 1 + (n % 8), LATER);
+    const expected = n === 52 ? 'finished' : 'active';
+    assert.strictEqual(gameOf(state).status, expected, `after ${n} scores`);
+  }
+  const game = gameOf(state);
+  assert.strictEqual(game.finishedAt, LATER);
+  assert.strictEqual(Golf.cursor(game), null);
+  assert.throws(() => Golf.recordScore(state, gameId, 3, LATER), { message: /No active game/ });
+});
+
+test('recordScore moves on to the next course after its last cell', () => {
+  let { state, gameId } = setup(['Sam', 'Adam']);
+  for (let n = 0; n < 18; n += 1) state = Golf.recordScore(state, gameId, 3, NOW);
+  assert.strictEqual(Golf.cursor(gameOf(state)).courseIndex, 1);
+  assert.strictEqual(gameOf(state).status, 'active');
+});
+
+test('priorHoleInfo: previous hole on this course, or the previous course total on hole 1 of courses 2+', () => {
+  const { state, id } = setup(['Sam', 'Adam'], { Sam: [5] });
+  const game = gameOf(state);
+  assert.strictEqual(Golf.priorHoleInfo(game, { courseIndex: 0, hole: 1, playerId: id('Sam') }), null);
+  assert.deepStrictEqual(plain(Golf.priorHoleInfo(game, { courseIndex: 0, hole: 2, playerId: id('Sam') })), {
+    kind: 'hole', label: 'Hole 1', score: 5,
+  });
+  const full = setup(['Sam', 'Adam'], { Sam: fill(3), Adam: fill(4) });
+  const after = gameOf(full.state);
+  assert.deepStrictEqual(plain(Golf.priorHoleInfo(after, { courseIndex: 1, hole: 1, playerId: full.id('Sam') })), {
+    kind: 'course', label: 'Mini Golf', total: 27, skips: 0, complete: true, vsPar: 0,
+  });
+  assert.strictEqual(Golf.priorHoleInfo(after, { courseIndex: 0, hole: 1, playerId: full.id('Sam') }), null);
+});
+
+test('courseResult: one complete lowest total wins; ties and skips are handled', () => {
+  const won = setup(['Sam', 'Adam'], { Sam: fill(3), Adam: fill(4) });
+  const r = plain(Golf.courseResult(gameOf(won.state), 0));
+  assert.deepStrictEqual(r, {
+    winnerId: won.id('Sam'), leaders: [won.id('Sam')], total: 27, runnerUpTotal: 36, tied: false,
+  });
+
+  const tied = setup(['Sam', 'Adam'], { Sam: fill(3), Adam: fill(3) });
+  const t = plain(Golf.courseResult(gameOf(tied.state), 0));
+  assert.strictEqual(t.winnerId, null);
+  assert.strictEqual(t.tied, true);
+  assert.deepStrictEqual(t.leaders.sort(), [tied.id('Sam'), tied.id('Adam')].sort());
+
+  // Jo has the lowest total but a skip, so Jo cannot win.
+  const skip = setup(['Sam', 'Adam', 'Jo'], { Sam: fill(3), Adam: fill(4), Jo: [...fill(1, 8), 'S'] });
+  const s = plain(Golf.courseResult(gameOf(skip.state), 0));
+  assert.strictEqual(s.winnerId, skip.id('Sam'));
+  assert.strictEqual(s.runnerUpTotal, 36);
+
+  const none = setup(['Sam'], { Sam: ['S'] });
+  assert.deepStrictEqual(plain(Golf.courseResult(gameOf(none.state), 0)), {
+    winnerId: null, leaders: [], total: null, runnerUpTotal: null, tied: false,
+  });
 });
