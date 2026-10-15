@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Golf Scorecard</title>
+<style>
+  :root {
+    --bg: #f5f7f5; --card: #ffffff; --fg: #14201a; --muted: #5a6a61; --line: #d6ded9;
+    --accent: #1f7a4d; --accent-fg: #ffffff; --soft: #e6f1ea;
+    --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101412; --card: #18201c; --fg: #e8efea; --muted: #9fb0a6; --line: #2d3a33;
+      --accent: #4cc68a; --accent-fg: #0b1510; --soft: #1b3026;
+      --error: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; min-height: 100vh; min-height: 100dvh;
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none; touch-action: manipulation;
+  }
+  .wrap {
+    max-width: 520px; margin: 0 auto; box-sizing: border-box;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  h1 { font-size: 1.6rem; margin: 0; }
+  h2 { font-size: 1.3rem; margin: 0 0 8px; }
+  p { margin: 8px 0; }
+  .top { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; flex-wrap: wrap; }
+  .top .link { padding-left: 0; }
+  .hint { color: var(--muted); font-size: .95rem; }
+  .sub { display: block; font-size: .95rem; font-weight: 400; opacity: .9; margin-top: 2px; }
+  .eyebrow { color: var(--muted); font-size: .9rem; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .section-label { color: var(--muted); font-size: .9rem; margin: 20px 0 4px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin: 12px 0; }
+  .error { color: var(--error); font-weight: 600; }
+
+  .btn {
+    font: inherit; font-size: 18px; font-weight: 600; min-height: 56px; padding: 0 20px;
+    border-radius: 14px; border: 2px solid var(--accent); background: var(--card); color: var(--accent);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center; text-align: center;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); }
+  .btn.big { width: 100%; min-height: 72px; font-size: 22px; flex-direction: column; margin: 8px 0; }
+  .btn.small { min-height: 44px; font-size: 16px; padding: 0 14px; }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .link {
+    background: none; border: 0; color: var(--accent); font: inherit; font-size: 16px;
+    min-height: 44px; padding: 10px 8px; cursor: pointer; text-decoration: underline;
+  }
+  .link.danger { color: var(--error); }
+
+  .text {
+    font: inherit; font-size: 18px; min-height: 52px; padding: 0 14px; flex: 1; min-width: 0;
+    border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  .add, .rename { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+
+  .list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 4px; min-height: 56px; border-bottom: 1px solid var(--line); }
+  .row .rename { margin: 8px 0; width: 100%; }
+  .pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 56px; font-size: 19px; cursor: pointer; }
+  .pick input { width: 26px; height: 26px; margin: 0; flex: none; accent-color: var(--accent); }
+  .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+
+  .playing {
+    display: flex; justify-content: space-between; align-items: center; width: 100%;
+    margin: 12px 0 4px; min-height: 52px; padding: 10px 14px; border-radius: 12px;
+    background: var(--soft); color: var(--fg); border: 0; font: inherit; font-size: 17px; text-align: left; cursor: pointer;
+  }
+  .links { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 16px; }
+  .banner-order { font-size: 1.35rem; font-weight: 700; margin: 8px 0 12px; }
+
+  .save-banner {
+    position: sticky; top: 0; z-index: 5; background: var(--error); color: #ffffff;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 16px; font-weight: 600;
+  }
+  .save-banner .btn { min-height: 44px; border-color: #ffffff; color: #ffffff; background: transparent; }
+  .toast {
+    position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
+    margin: 0 auto; max-width: 480px; z-index: 10; padding: 12px 16px; border-radius: 12px;
+    background: var(--fg); color: var(--bg); text-align: center; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div id="save-banner" class="save-banner" role="alert" hidden>
+  <span>Scores are not being saved.</span>
+  <button class="btn small" data-action="export">Export</button>
+</div>
+<main id="app" class="wrap"></main>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script id="logic">
+/*
+ * Pure logic. No DOM, no localStorage, no window. Runs unmodified in Node.
+ * Every mutator takes a state and returns a NEW state; inputs are never modified.
+ * Randomness is injected as rand(): a function returning a float in [0, 1).
+ *
+ * Step 2 will add here: derived cursor and turn order, recordScore, undo/redo,
+ * playoffs, replay queue. naiveCursor() is a placeholder for the cursor.
+ */
+const Golf = (() => {
+  const SCHEMA_VERSION = 1;
+  const MIN_ROSTER = 1;
+  const MAX_ROSTER = 6;
+
+  // Spec section 2. Changing a course id breaks its history: ids are permanent.
+  const VENUES = [{
+    id: 'redmond', name: 'Redmond',
+    courses: [
+      { id: 'redmond-mini', name: 'Mini Golf', holes: 9, par: [3, 3, 3, 3, 3, 3, 3, 3, 3],
+        lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
+      { id: 'redmond-aces', name: 'Aces', holes: 8, par: null,
+        lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
+      { id: 'redmond-duff', name: 'Duffleboard', holes: 9, par: null,
+        lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
+    ],
+  }];
+
+  // Eight distinct colors that read on both light and dark backgrounds.
+  const PALETTE = ['#d1495b', '#2d7ff9', '#2f9e44', '#e8a317', '#7048e8', '#0ca3a3', '#e64980', '#495057'];
+
+  function deepFreeze(value) {
+    if (value && typeof value === 'object') {
+      Object.values(value).forEach(deepFreeze);
+      Object.freeze(value);
+    }
+    return value;
+  }
+  deepFreeze(VENUES);
+  deepFreeze(PALETTE);
+
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+
+  // ---- ids and randomness ----------------------------------------------------
+
+  // 128 random bits drawn from rand(), formatted as hex with a prefix.
+  function makeId(prefix, rand = Math.random) {
+    let hex = '';
+    for (let i = 0; i < 32; i += 1) hex += Math.floor(rand() * 16).toString(16);
+    return `${prefix}_${hex}`;
+  }
+
+  // Fisher-Yates over a copy. Returns a new array.
+  function shuffle(items, rand = Math.random) {
+    const out = items.slice();
+    for (let i = out.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(rand() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
+
+  // ---- state and migration ---------------------------------------------------
+
+  function emptyState() {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      players: [],
+      lastRoster: [],
+      currentGameId: null,
+      lastExportAt: null,
+      games: [],
+    };
+  }
+
+  // MIGRATIONS[n] upgrades a state from schemaVersion n to n + 1.
+  // None yet: version 1 is the first version.
+  const MIGRATIONS = {};
+
+  function normalize(state) {
+    return Object.assign({}, state, {
+      schemaVersion: SCHEMA_VERSION,
+      players: Array.isArray(state.players) ? state.players : [],
+      lastRoster: Array.isArray(state.lastRoster) ? state.lastRoster : [],
+      currentGameId: typeof state.currentGameId === 'string' ? state.currentGameId : null,
+      lastExportAt: typeof state.lastExportAt === 'string' ? state.lastExportAt : null,
+      games: Array.isArray(state.games) ? state.games : [],
+    });
+  }
+
+  // Returns a current-version state. Throws on unreadable data. Newer data
+  // throws with err.code === 'NEWER_SCHEMA' so the UI can refuse to overwrite it.
+  function migrate(raw) {
+    if (raw === null || raw === undefined) return emptyState();
+    if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Saved data is not an object.');
+    let version = raw.schemaVersion;
+    if (!Number.isInteger(version) || version < 1) throw new Error('Saved data has no valid schemaVersion.');
+    if (version > SCHEMA_VERSION) {
+      const err = new Error(`Saved data is from a newer version of this app (schemaVersion ${version}). Update the app to open it.`);
+      err.code = 'NEWER_SCHEMA';
+      throw err;
+    }
+    let state = clone(raw);
+    while (version < SCHEMA_VERSION) {
+      state = MIGRATIONS[version](state);
+      version += 1;
+    }
+    return normalize(state);
+  }
+
+  // ---- venues and courses ----------------------------------------------------
+
+  function defaultVenue() { return VENUES[0]; }
+
+  function getVenue(venueId) {
+    return VENUES.find((v) => v.id === venueId) || null;
+  }
+
+  function getCourse(courseId) {
+    for (const venue of VENUES) {
+      const course = venue.courses.find((c) => c.id === courseId);
+      if (course) return course;
+    }
+    return null;
+  }
+
+  // ---- players ---------------------------------------------------------------
+
+  function visiblePlayers(state) {
+    return state.players.filter((p) => !p.hidden);
+  }
+
+  function getPlayer(state, id) {
+    return state.players.find((p) => p.id === id) || null;
+  }
+
+  // Today's roster as player objects, in roster (column) order.
+  function rosterPlayers(state) {
+    return state.lastRoster
+      .map((id) => getPlayer(state, id))
+      .filter((p) => p && !p.hidden);
+  }
+
+  function normalizeName(name) {
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    if (trimmed === '') throw new Error('Name cannot be empty.');
+    return trimmed;
+  }
+
+  // Uniqueness is checked among visible players, case-insensitively.
+  function nameTaken(state, name, exceptId = null) {
+    const lower = name.toLowerCase();
+    return visiblePlayers(state).some((p) => p.id !== exceptId && p.name.toLowerCase() === lower);
+  }
+
+  // First palette color no visible player uses; falls back to cycling.
+  function pickColor(state) {
+    const used = new Set(visiblePlayers(state).map((p) => p.color));
+    return PALETTE.find((c) => !used.has(c)) || PALETTE[state.players.length % PALETTE.length];
+  }
+
+  function addPlayer(state, name, rand = Math.random, now = null) {
+    const clean = normalizeName(name);
+    if (nameTaken(state, clean)) throw new Error(`"${clean}" is already in the player list.`);
+    const next = clone(state);
+    next.players.push({
+      id: makeId('p', rand),
+      name: clean,
+      color: pickColor(state),
+      hidden: false,
+      createdAt: now,
+    });
+    return next;
+  }
+
+  function renamePlayer(state, id, name) {
+    const clean = normalizeName(name);
+    const player = getPlayer(state, id);
+    if (!player || player.hidden) throw new Error('That player is not in the list.');
+    if (nameTaken(state, clean, id)) throw new Error(`"${clean}" is already in the player list.`);
+    const next = clone(state);
+    getPlayer(next, id).name = clean;
+    return next;
+  }
+
+  // Soft delete: history and games are kept; the player leaves today's roster.
+  function hidePlayer(state, id) {
+    if (!getPlayer(state, id)) throw new Error('That player is not in the list.');
+    const next = clone(state);
+    getPlayer(next, id).hidden = true;
+    next.lastRoster = next.lastRoster.filter((x) => x !== id);
+    return next;
+  }
+
+  function requireVisible(state, id) {
+    const player = getPlayer(state, id);
+    if (!player || player.hidden) throw new Error('That player is not in the list.');
+    return player;
+  }
+
+  function validateRoster(state, ids) {
+    if (!Array.isArray(ids) || ids.length < MIN_ROSTER || ids.length > MAX_ROSTER) {
+      throw new Error(`Choose between ${MIN_ROSTER} and ${MAX_ROSTER} players.`);
+    }
+    if (new Set(ids).size !== ids.length) throw new Error('A player can only be picked once.');
+    ids.forEach((id) => requireVisible(state, id));
+  }
+
+  // "Playing today". Saved so the next New game reuses it.
+  function setRoster(state, ids) {
+    validateRoster(state, ids);
+    const next = clone(state);
+    next.lastRoster = ids.slice();
+    return next;
+  }
+
+  // ---- games -----------------------------------------------------------------
+
+  function getGame(state, gameId) {
+    return state.games.find((g) => g.id === gameId) || null;
+  }
+
+  function getActiveGame(state) {
+    const game = getGame(state, state.currentGameId);
+    return game && game.status === 'active' ? game : null;
+  }
+
+  function hasAnyScore(game) {
+    return game.courses.some((c) => !!c.playoff
+      || Object.values(c.scores).some((arr) => arr.some((v) => v !== null)));
+  }
+
+  // Creates an active game from lastRoster. Any previously active game becomes
+  // 'abandoned'. The caller decides whether to confirm first.
+  function newGame(state, rand = Math.random, now = null) {
+    const venue = defaultVenue();
+    const roster = state.lastRoster.slice();
+    validateRoster(state, roster);
+    const game = {
+      id: makeId('g', rand),
+      venueId: venue.id,
+      status: 'active',
+      startedAt: now,
+      finishedAt: null,
+      playerIds: roster,
+      firstOrder: shuffle(roster, rand),
+      courses: venue.courses.map((course) => ({
+        courseId: course.id,
+        scores: Object.fromEntries(roster.map((id) => [id, new Array(course.holes).fill(null)])),
+        playoff: null,
+      })),
+      replayQueue: null,
+      undo: [],
+      redo: [],
+    };
+    const next = clone(state);
+    next.games.forEach((g) => { if (g.status === 'active') g.status = 'abandoned'; });
+    next.games.push(game);
+    next.currentGameId = game.id;
+    return next;
+  }
+
+  function canRerollFirstOrder(game) {
+    return !hasAnyScore(game);
+  }
+
+  function rerollFirstOrder(state, gameId, rand = Math.random) {
+    const game = getGame(state, gameId);
+    if (!game || game.status !== 'active') throw new Error('No active game to re-roll.');
+    if (!canRerollFirstOrder(game)) throw new Error('The order can only be re-rolled before the first score.');
+    const next = clone(state);
+    getGame(next, gameId).firstOrder = shuffle(game.playerIds, rand);
+    return next;
+  }
+
+  function firstOrderNames(state, game) {
+    return game.firstOrder.map((id) => (getPlayer(state, id) || { name: '?' }).name);
+  }
+
+  // "Sam goes first, then Adam, Jo"
+  function firstOrderSentence(state, game) {
+    const [first, ...rest] = firstOrderNames(state, game);
+    if (!first) return '';
+    if (rest.length === 0) return `${first} goes first`;
+    return `${first} goes first, then ${rest.join(', ')}`;
+  }
+
+  // STEP 2 HOOK: placeholder cursor. Step 2 replaces it with the derived cursor
+  // (turn order, playoffs, replay queue). Returns null when every cell is filled.
+  function naiveCursor(game) {
+    for (let ci = 0; ci < game.courses.length; ci += 1) {
+      const entry = game.courses[ci];
+      const course = getCourse(entry.courseId);
+      for (let h = 0; h < course.holes; h += 1) {
+        if (game.playerIds.some((id) => entry.scores[id][h] === null)) {
+          return { courseIndex: ci, courseId: entry.courseId, hole: h + 1 };
+        }
+      }
+    }
+    return null;
+  }
+
+  return {
+    SCHEMA_VERSION, MIN_ROSTER, MAX_ROSTER, VENUES, PALETTE,
+    emptyState, migrate, makeId, shuffle,
+    getVenue, getCourse,
+    visiblePlayers, getPlayer, rosterPlayers,
+    addPlayer, renamePlayer, hidePlayer, setRoster,
+    getGame, getActiveGame, hasAnyScore, newGame,
+    canRerollFirstOrder, rerollFirstOrder,
+    firstOrderNames, firstOrderSentence, naiveCursor,
+  };
+})();
+</script>
+
+<script id="ui">
+(() => {
+  'use strict';
+
+  const STORAGE_KEY = 'golfScorecard.v1';
+  const CORRUPT_PREFIX = 'golfScorecard.corrupt.';
+
+  let state = Golf.emptyState();
+  let screen = 'home';          // 'setup' | 'home' | 'scoring'
+  let blockedMessage = null;    // set when storage holds data this version cannot open
+  let readOnly = false;         // when true nothing is written, so unreadable data is never overwritten
+  let editingId = null;         // player being renamed in setup
+  let setupError = '';
+  let toastTimer = null;
+
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (value) => String(value).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+  const cryptoRand = () => {
+    const a = new Uint32Array(1);
+    crypto.getRandomValues(a);
+    return a[0] / 4294967296;
+  };
+  const nowISO = () => new Date().toISOString();
+  const formatTime = (iso) => {
+    try {
+      return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+    } catch (e) {
+      return '';
+    }
+  };
+
+  // ---- toast and save banner -------------------------------------------------
+
+  function toast(message) {
+    const el = $('#toast');
+    el.textContent = message;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+  }
+
+  function setSaveBanner(show) {
+    $('#save-banner').hidden = !show;
+  }
+
+  // ---- storage ---------------------------------------------------------------
+
+  function writeState(next) {
+    if (readOnly) return false;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      setSaveBanner(false);
+      return true;
+    } catch (e) {
+      setSaveBanner(true);
+      return false;
+    }
+  }
+
+  // Moves unreadable raw text to a timestamped key and starts fresh.
+  function recoverCorrupt(raw) {
+    const key = CORRUPT_PREFIX + Date.now();
+    try {
+      localStorage.setItem(key, raw);
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      // Could not back it up, so do not overwrite it.
+      readOnly = true;
+      setSaveBanner(true);
+      return Golf.emptyState();
+    }
+    const fresh = Golf.emptyState();
+    writeState(fresh);
+    toast(`Saved data was unreadable and was moved to ${key}.`);
+    return fresh;
+  }
+
+  function loadState() {
+    blockedMessage = null;
+    readOnly = false;
+    let raw;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      setSaveBanner(true);
+      return Golf.emptyState();
+    }
+    if (raw === null) return Golf.emptyState();
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      return recoverCorrupt(raw);
+    }
+    try {
+      return Golf.migrate(parsed);
+    } catch (e) {
+      if (e.code === 'NEWER_SCHEMA') {
+        blockedMessage = e.message;
+        readOnly = true;
+        return Golf.emptyState();
+      }
+      return recoverCorrupt(raw);
+    }
+  }
+
+  // Applies a new state, saves it, and optionally switches screen.
+  function commit(next, nextScreen = null) {
+    state = next;
+    writeState(state);
+    if (nextScreen) screen = nextScreen;
+    setupError = '';
+    render();
+  }
+
+  function go(name) {
+    screen = name;
+    setupError = '';
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  // ---- views -----------------------------------------------------------------
+
+  function summary(game) {
+    const cursor = Golf.naiveCursor(game);
+    const course = cursor ? Golf.getCourse(cursor.courseId) : null;
+    const parts = [course ? `${course.name}, hole ${cursor.hole}` : 'Game complete'];
+    if (game.startedAt) parts.push(`started ${formatTime(game.startedAt)}`);
+    return parts.join(' · ');
+  }
+
+  function viewHome() {
+    const active = Golf.getActiveGame(state);
+    const names = Golf.rosterPlayers(state).map((p) => esc(p.name));
+    const playingLine = names.length ? `Playing: ${names.join(', ')}` : 'Add players to start';
+    const resume = active
+      ? `<button class="btn big primary" data-action="resume">Resume game<span class="sub">${esc(summary(active))}</span></button>`
+      : '';
+    return `
+      <header class="top"><h1>Golf Scorecard</h1></header>
+      ${resume}
+      <button class="btn ${active ? '' : 'big primary'}" data-action="new">New game</button>
+      <button class="playing" data-action="players"><span>${playingLine}</span><span aria-hidden="true">›</span></button>
+      <nav class="links">
+        <button class="link" data-action="soon">History</button>
+        <button class="link" data-action="players">Players</button>
+        <button class="link" data-action="soon">Export all data</button>
+        <button class="link" data-action="soon">Import data</button>
+      </nav>`;
+  }
+
+  function viewSetup() {
+    const roster = new Set(state.lastRoster);
+    const full = roster.size >= Golf.MAX_ROSTER;
+    const active = Golf.getActiveGame(state);
+    const players = Golf.visiblePlayers(state);
+    const rows = players.map((p) => {
+      const id = esc(p.id);
+      if (editingId === p.id) {
+        return `<li class="row">
+          <form class="rename" data-form="rename" data-id="${id}">
+            <input class="text" name="name" maxlength="24" value="${esc(p.name)}" aria-label="New name">
+            <button class="btn small primary">Save</button>
+            <button type="button" class="btn small" data-action="cancel-edit">Cancel</button>
+          </form>
+        </li>`;
+      }
+      const checked = roster.has(p.id);
+      const disabled = !checked && full ? 'disabled' : '';
+      return `<li class="row">
+        <label class="pick">
+          <input type="checkbox" data-action="toggle" data-id="${id}" ${checked ? 'checked' : ''} ${disabled}>
+          <span class="dot" style="background:${esc(p.color)}"></span>
+          <span class="pname">${esc(p.name)}</span>
+        </label>
+        <button class="link" data-action="edit" data-id="${id}">Rename</button>
+        <button class="link danger" data-action="remove" data-id="${id}">Remove</button>
+      </li>`;
+    }).join('');
+    return `
+      <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>Players</h1></header>
+      <form class="add" data-form="add">
+        <input class="text" name="name" maxlength="24" placeholder="Add a player" autocomplete="off" autocapitalize="words" aria-label="Player name">
+        <button class="btn primary">Add</button>
+      </form>
+      ${setupError ? `<p class="error" role="alert">${esc(setupError)}</p>` : ''}
+      <p class="section-label">Playing today: ${roster.size} of ${Golf.MAX_ROSTER}</p>
+      <ul class="list">${rows}</ul>
+      ${players.length ? '' : '<p class="hint">No players yet. Add the people playing today.</p>'}
+      <button class="btn big primary" data-action="start" ${roster.size < Golf.MIN_ROSTER ? 'disabled' : ''}>${active ? 'Start new game' : 'Start game'}</button>
+      <p class="hint">Starting a game shuffles the hole 1 order.</p>`;
+  }
+
+  function viewScoring() {
+    const game = Golf.getActiveGame(state);
+    const cursor = Golf.naiveCursor(game);
+    const course = cursor ? Golf.getCourse(cursor.courseId) : null;
+    const where = course ? `${esc(course.name)} · hole ${cursor.hole}` : 'Game complete';
+    const reroll = Golf.canRerollFirstOrder(game)
+      ? '<button class="link" data-action="reroll">Re-roll</button>'
+      : '';
+    return `
+      <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>Scoring</h1></header>
+      <section class="card">
+        <p class="eyebrow">${where}</p>
+        <p class="banner-order">🎲 ${esc(Golf.firstOrderSentence(state, game))}</p>
+        ${reroll}
+      </section>
+      <p class="hint">Placeholder. Real scoring arrives in step 2.</p>`;
+  }
+
+  const VIEWS = { setup: viewSetup, home: viewHome, scoring: viewScoring };
+
+  function render() {
+    const app = $('#app');
+    if (blockedMessage) {
+      app.innerHTML = `<section class="card">
+        <h2>Can't open saved data</h2>
+        <p>${esc(blockedMessage)}</p>
+        <p class="hint">Nothing has been changed. Your saved data is untouched.</p>
+      </section>`;
+      return;
+    }
+    if (screen === 'scoring' && !Golf.getActiveGame(state)) screen = 'home';
+    app.innerHTML = VIEWS[screen]();
+    if (screen === 'setup' && editingId) {
+      const input = app.querySelector('.rename input');
+      if (input) { input.focus(); input.select(); }
+    }
+  }
+
+  // ---- actions ---------------------------------------------------------------
+
+  function startNewGame() {
+    if (Golf.rosterPlayers(state).length === 0) { go('setup'); return; }
+    if (Golf.getActiveGame(state) && !confirm('Abandon current game?')) return;
+    try {
+      commit(Golf.newGame(state, cryptoRand, nowISO()), 'scoring');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function reroll() {
+    const game = Golf.getActiveGame(state);
+    if (!game) return;
+    try {
+      commit(Golf.rerollFirstOrder(state, game.id, cryptoRand));
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function toggleRoster(id, checked) {
+    const others = state.lastRoster.filter((x) => x !== id);
+    try {
+      commit(Golf.setRoster(state, checked ? [...others, id] : others));
+    } catch (e) {
+      setupError = e.message;
+      render();
+    }
+  }
+
+  function addPlayerFromForm(name) {
+    try {
+      let next = Golf.addPlayer(state, name, cryptoRand, nowISO());
+      const newId = next.players[next.players.length - 1].id;
+      if (state.lastRoster.length < Golf.MAX_ROSTER) {
+        next = Golf.setRoster(next, [...state.lastRoster, newId]);
+      }
+      commit(next);
+      const input = $('#app .add input');
+      if (input) input.focus();
+    } catch (e) {
+      setupError = e.message;
+      render();
+    }
+  }
+
+  function renamePlayer(id, name) {
+    try {
+      const next = Golf.renamePlayer(state, id, name);
+      editingId = null;
+      commit(next);
+    } catch (e) {
+      setupError = e.message;
+      render();
+    }
+  }
+
+  function removePlayer(id) {
+    const player = Golf.getPlayer(state, id);
+    if (!player || !confirm(`Remove ${player.name}? Past games keep their scores.`)) return;
+    if (editingId === id) editingId = null;
+    commit(Golf.hidePlayer(state, id));
+  }
+
+  // ---- events (delegated) ----------------------------------------------------
+
+  document.addEventListener('click', (event) => {
+    const el = event.target.closest('[data-action]');
+    if (!el) return;
+    const { action, id } = el.dataset;
+    switch (action) {
+      case 'home': editingId = null; go('home'); break;
+      case 'players': editingId = null; go('setup'); break;
+      case 'new':
+      case 'start': startNewGame(); break;
+      case 'resume': go('scoring'); break;
+      case 'reroll': reroll(); break;
+      case 'edit': editingId = id; setupError = ''; render(); break;
+      case 'cancel-edit': editingId = null; render(); break;
+      case 'remove': removePlayer(id); break;
+      case 'export': toast('Export is not built yet.'); break;
+      case 'soon': toast('Coming in a later step.'); break;
+      default: break; // 'toggle' is handled by the change listener
+    }
+  });
+
+  document.addEventListener('change', (event) => {
+    const el = event.target;
+    if (el.matches('[data-action="toggle"]')) toggleRoster(el.dataset.id, el.checked);
+  });
+
+  document.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const name = String(new FormData(form).get('name') || '');
+    if (form.dataset.form === 'add') addPlayerFromForm(name);
+    if (form.dataset.form === 'rename') renamePlayer(form.dataset.id, name);
+  });
+
+  // Another tab changed storage: reload state so the last writer does not win silently.
+  window.addEventListener('storage', (event) => {
+    if (event.key !== null && event.key !== STORAGE_KEY) return;
+    state = loadState();
+    render();
+  });
+
+  // ---- init ------------------------------------------------------------------
+
+  state = loadState();
+  screen = Golf.visiblePlayers(state).length === 0 ? 'setup' : 'home';
+  render();
+})();
+</script>
+</body>
+</html>
