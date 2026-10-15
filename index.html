@@ -108,7 +108,8 @@
   .now .meta { display: flex; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 600; }
   .now .meta.next { justify-content: flex-end; font-weight: 500; opacity: .92; font-size: 14px; }
   .now .who { font-size: 30px; font-weight: 800; line-height: 1.15; margin: 4px 0; overflow-wrap: anywhere; }
-  .course { background: var(--card); border: 1px solid var(--line); border-radius: 14px; margin: 0 0 12px; overflow: hidden; }
+  /* overflow: clip (not hidden) so the sticky header inside still sticks to the viewport */
+  .course { background: var(--card); border: 1px solid var(--line); border-radius: 14px; margin: 0 0 12px; overflow: clip; }
   .course-head {
     display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 44px;
     font: inherit; font-size: 16px; font-weight: 700; color: var(--fg); text-align: left;
@@ -118,7 +119,11 @@
   .course-head span:last-child { color: var(--muted); font-size: 14px; font-weight: 600; }
   .sheet { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 17px; font-variant-numeric: tabular-nums; }
   .sheet th, .sheet td { border-top: 1px solid var(--line); padding: 6px 2px; text-align: center; overflow: hidden; }
-  .sheet thead th { font-size: 13px; font-weight: 600; color: var(--muted); padding: 6px 2px 4px; vertical-align: bottom; }
+  .sheet thead th {
+    font-size: 13px; font-weight: 600; color: var(--muted); padding: 6px 2px 4px; vertical-align: bottom;
+    /* the names row stays under the now-up bar while the card scrolls (--bar-h is set by JS) */
+    position: sticky; top: var(--bar-h, 0px); z-index: 3; background: var(--card);
+  }
   .sheet thead th:first-child, .sheet tbody th, .sheet tfoot th { width: 48px; color: var(--muted); font-weight: 600; font-size: 14px; }
   .sheet td { height: 40px; }
   .sheet tfoot th, .sheet tfoot td { font-weight: 800; color: var(--fg); border-top: 2px solid var(--line); }
@@ -172,6 +177,62 @@
   .skip-list li { padding: 2px 0; }
   .skip-sheet .btn.big { margin: 0; min-height: 60px; font-size: 19px; }
   body.scoring .toast { bottom: calc(var(--dock-h, 300px) + 12px); }
+
+  /* the confirmation for a tap shows in the now-up bar's last line (never over a cell) */
+  .now [data-flash].flash {
+    background: color-mix(in srgb, var(--pi) 24%, transparent); border-radius: 999px;
+    padding: 1px 10px; font-weight: 800;
+  }
+
+  /* ---- stats (spec 8) ---- */
+  .stats-head { display: flex; flex-direction: column; gap: 4px; }
+  .champ { font-size: 1.2rem; font-weight: 800; margin: 2px 0 4px; }
+  .standing { border-top: 1px solid var(--line); padding: 10px 0; }
+  .standing:first-child { border-top: 0; padding-top: 4px; }
+  .standing .top-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 17px; font-weight: 700; }
+  .standing .top-line span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .note { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
+  .quiet { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
+  .record {
+    display: block; margin: 8px 0 0; padding: 8px 12px; border-radius: 12px;
+    background: var(--soft); color: var(--fg); font-weight: 700;
+  }
+  .highlights { list-style: none; margin: 10px 0 0; padding: 0; font-size: 15px; }
+  .highlights li { padding: 3px 0; }
+  .list-reset { list-style: none; margin: 0; padding: 0; }
+  .actions { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+  .actions .btn.big { margin: 0; }
+  .btn .sub { font-size: 13px; font-weight: 500; opacity: .8; }
+
+  .confetti-layer { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 20; }
+  .confetti {
+    position: absolute; top: -14px; width: 8px; height: 12px; border-radius: 2px;
+    animation-name: confetti-fall; animation-timing-function: ease-in; animation-fill-mode: forwards;
+  }
+  @keyframes confetti-fall {
+    to { transform: translate3d(var(--dx, 0px), 110vh, 0) rotate(var(--rot, 540deg)); }
+  }
+  @media (prefers-reduced-motion: reduce) { .confetti-layer { display: none; } }
+
+  /* ---- history (spec 8.3) ---- */
+  .tabs { display: flex; gap: 8px; margin: 8px 0 12px; }
+  .tab {
+    flex: 1; min-height: 48px; font: inherit; font-size: 17px; font-weight: 600; color: var(--fg);
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
+  }
+  .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .game-row {
+    display: flex; flex-direction: column; gap: 2px; width: 100%; min-height: 56px; text-align: left;
+    font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 12px 14px; margin: 8px 0; cursor: pointer;
+  }
+  .game-row.abandoned { opacity: .55; border-style: dashed; }
+  .game-row .sub-line { color: var(--muted); font-size: 14px; }
+  .prow { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .prow:first-of-type { border-top: 0; }
+  .prow .sub-line { color: var(--muted); font-size: 14px; }
+  .spark { width: 72px; height: 24px; flex: none; color: var(--accent); overflow: visible; }
+  .card h2 .dot { display: inline-block; vertical-align: middle; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -1059,8 +1120,221 @@ const Golf = (() => {
     return game.playerIds.every((id) => game.courses[ci].scores[id].every((v) => v !== null));
   }
 
+  // ---- stats (spec 8). Derived on every call from the games; nothing is stored. ----
+  // A round is one player's card on one course in one game. Only finished games count,
+  // and only complete cards (every regulation cell a number). Playoff strokes never count.
+
+  const MIN_POOL = 5; // a percentile needs at least this many prior rounds in its pool
+  const timeOf = (iso) => Date.parse(iso) || 0;
+
+  // Every complete round on a course from finished games.
+  function courseRounds(state, courseId) {
+    const rounds = [];
+    state.games.forEach((game) => {
+      if (game.status !== 'finished') return;
+      game.courses.forEach((entry, ci) => {
+        if (entry.courseId !== courseId) return;
+        game.playerIds.forEach((pid) => {
+          const t = courseTotal(game, ci, pid);
+          if (t.complete) rounds.push({ gameId: game.id, finishedAt: game.finishedAt, playerId: pid, total: t.total });
+        });
+      });
+    });
+    return rounds;
+  }
+
+  // Complete rounds on the course from games that finished before this one (by finishedAt).
+  // Order-independent: a reopened and refinished game moves in the order it finishes now.
+  function priorRounds(state, game, courseId) {
+    if (!game.finishedAt) return [];
+    const end = timeOf(game.finishedAt);
+    return courseRounds(state, courseId)
+      .filter((r) => r.gameId !== game.id && timeOf(r.finishedAt) < end);
+  }
+
+  // Share of the pool that this total beats, with ties counting half, rounded.
+  // Null below MIN_POOL rounds. Lower is better on every course here.
+  function percentileOf(total, pool, lowerIsBetter = true) {
+    if (pool.length < MIN_POOL) return null;
+    const dir = lowerIsBetter ? 1 : -1;
+    let beaten = 0;
+    let tied = 0;
+    pool.forEach((t) => {
+      if (dir * t > dir * total) beaten += 1;
+      else if (t === total) tied += 1;
+    });
+    return Math.round(((beaten + 0.5 * tied) / pool.length) * 100);
+  }
+
+  // Personal record for a complete total against the player's prior complete totals.
+  function recordFor(total, priorTotals, lowerIsBetter = true) {
+    if (priorTotals.length === 0) return { kind: 'first' };
+    const dir = lowerIsBetter ? 1 : -1;
+    const best = (lowerIsBetter ? Math.min : Math.max)(...priorTotals);
+    if (dir * total < dir * best) return { kind: 'new', previousBest: best };
+    if (total === best) return { kind: 'tied' };
+    return null;
+  }
+
+  // Lifetime course wins as winner -> (other player -> count). Finished games only, and a
+  // win counts over each other player who has a complete round on that course.
+  function winTable(state) {
+    const table = new Map();
+    state.games.forEach((game) => {
+      if (game.status !== 'finished') return;
+      game.courses.forEach((_, ci) => {
+        const { winnerId } = courseResult(game, ci);
+        if (!winnerId) return;
+        game.playerIds.forEach((pid) => {
+          if (pid === winnerId || !courseTotal(game, ci, pid).complete) return;
+          if (!table.has(winnerId)) table.set(winnerId, new Map());
+          const row = table.get(winnerId);
+          row.set(pid, (row.get(pid) || 0) + 1);
+        });
+      });
+    });
+    return table;
+  }
+
+  function courseStats(state, game, ci) {
+    const entry = game.courses[ci];
+    const course = getCourse(entry.courseId);
+    const dir = course.lowerIsBetter ? 1 : -1;
+    const prior = priorRounds(state, game, entry.courseId);
+    const allTotals = prior.map((r) => r.total);
+    const rows = standings(game, ci).map((pid) => {
+      const t = courseTotal(game, ci, pid);
+      const mine = prior.filter((r) => r.playerId === pid).map((r) => r.total);
+      const row = {
+        playerId: pid,
+        total: t.total,
+        vsPar: t.vsPar,
+        complete: t.complete,
+        skips: t.skips,
+        record: null,
+        pctAll: null,
+        pctPersonal: null,
+        rank: null,
+        ofCount: null,
+        priorCount: mine.length,
+        allPriorCount: allTotals.length,
+        holesInOne: course.par ? entry.scores[pid].filter((v) => v === 1).length : null,
+      };
+      if (t.complete) {
+        const pool = mine.concat([t.total]);
+        row.record = recordFor(t.total, mine, course.lowerIsBetter);
+        row.pctAll = percentileOf(t.total, allTotals, course.lowerIsBetter);
+        row.pctPersonal = percentileOf(t.total, mine, course.lowerIsBetter);
+        row.rank = 1 + pool.filter((x) => dir * x < dir * t.total).length;
+        row.ofCount = pool.length;
+      }
+      return row;
+    });
+    // Highlights for this course's card. Each hole's average is over the numeric entries.
+    let hardestHole = null;
+    const bestHoles = [];
+    for (let h = 0; h < course.holes; h += 1) {
+      const cells = game.playerIds
+        .map((pid) => ({ playerId: pid, score: entry.scores[pid][h] }))
+        .filter((c) => isNumber(c.score));
+      if (cells.length) {
+        const avg = cells.reduce((sum, c) => sum + c.score, 0) / cells.length;
+        if (!hardestHole || avg > hardestHole.avg) hardestHole = { hole: h + 1, avg };
+        cells.forEach((c) => {
+          if (avg - c.score > 0) {
+            bestHoles.push({ playerId: c.playerId, hole: h + 1, score: c.score, avg, beat: avg - c.score });
+          }
+        });
+      }
+    }
+    bestHoles.sort((a, b) => (b.beat - a.beat) || (a.hole - b.hole));
+    const result = courseResult(game, ci);
+    return {
+      courseId: entry.courseId,
+      name: course.name,
+      courseIndex: ci,
+      played: game.playerIds.some((id) => entry.scores[id].some((v) => v !== null)),
+      standings: rows,
+      winnerId: result.winnerId,
+      decidedBy: result.decidedBy,
+      decidedOn: result.decidedOn,
+      hardestHole,
+      bestHoles,
+    };
+  }
+
+  // Stats for one game. Call it on a finished game. Session wins count courses won, and
+  // champions are the players with the most (more than one means co-champions).
+  function gameStats(state, gameId) {
+    const game = getGame(state, gameId);
+    if (!game) throw new Error('That game is not in the history.');
+    const courses = game.courses.map((_, ci) => courseStats(state, game, ci));
+    const wins = Object.fromEntries(game.playerIds.map((id) => [id, 0]));
+    courses.forEach((c) => { if (c.winnerId) wins[c.winnerId] += 1; });
+    const most = Math.max(0, ...Object.values(wins));
+    const champions = most > 0 ? game.playerIds.filter((id) => wins[id] === most) : [];
+    const table = winTable(state);
+    const headToHead = [];
+    game.playerIds.forEach((a, i) => {
+      game.playerIds.slice(i + 1).forEach((b) => {
+        headToHead.push({
+          a, b, aWins: (table.get(a) && table.get(a).get(b)) || 0, bWins: (table.get(b) && table.get(b).get(a)) || 0,
+        });
+      });
+    });
+    return { courses, wins, champions, headToHead };
+  }
+
+  // Per course: rounds, best total, average (1 decimal) and the last five totals (oldest first).
+  function playerHistory(state, playerId) {
+    return defaultVenue().courses.map((course) => {
+      const totals = courseRounds(state, course.id)
+        .filter((r) => r.playerId === playerId)
+        .sort((a, b) => timeOf(a.finishedAt) - timeOf(b.finishedAt))
+        .map((r) => r.total);
+      const sum = totals.reduce((a, b) => a + b, 0);
+      return {
+        courseId: course.id,
+        name: course.name,
+        rounds: totals.length,
+        best: totals.length ? Math.min(...totals) : null,
+        average: totals.length ? Math.round((sum / totals.length) * 10) / 10 : null,
+        last5: totals.slice(-5),
+      };
+    });
+  }
+
+  // Every game, newest first. Winners are listed for finished games only.
+  function listGames(state) {
+    return state.games
+      .map((game) => ({
+        id: game.id,
+        status: game.status,
+        startedAt: game.startedAt,
+        finishedAt: game.finishedAt,
+        endedEarly: game.endedEarly === true,
+        playerIds: game.playerIds.slice(),
+        winners: game.status !== 'finished' ? [] : game.courses.flatMap((entry, ci) => {
+          const r = courseResult(game, ci);
+          return r.winnerId ? [{ courseId: entry.courseId, winnerId: r.winnerId, decidedBy: r.decidedBy }] : [];
+        }),
+      }))
+      .sort((a, b) => timeOf(b.startedAt) - timeOf(a.startedAt));
+  }
+
+  // The finished game with the latest finishedAt, or null. Only it can be reopened from history.
+  function latestFinishedGameId(state) {
+    let best = null;
+    state.games.forEach((game) => {
+      if (game.status !== 'finished') return;
+      if (!best || timeOf(game.finishedAt) > timeOf(best.finishedAt)) best = game;
+    });
+    return best ? best.id : null;
+  }
+
   return {
     SCHEMA_VERSION, MIN_ROSTER, MAX_ROSTER, VENUES, PALETTE,
+    gameStats, playerHistory, listGames, latestFinishedGameId, percentileOf, recordFor, MIN_POOL,
     emptyState, migrate, makeId, shuffle,
     getVenue, getCourse,
     visiblePlayers, getPlayer, rosterPlayers,
@@ -1085,9 +1359,14 @@ const Golf = (() => {
   const CORRUPT_PREFIX = 'golfScorecard.corrupt.';
   const FAT_FINGER_MS = 250;     // spec 6.1: ignore taps right after a score
   const POINTER_WINDOW_MS = 500; // a click this soon after a pointer press is the same tap
+  const FLASH_MS = 1300;         // how long a tap's confirmation stays in the now-up bar
 
   let state = Golf.emptyState();
-  let screen = 'home';          // 'setup' | 'home' | 'scoring' | 'over'
+  let screen = 'home';          // 'setup' | 'home' | 'scoring' | 'stats' | 'history' | 'abandoned'
+  let viewGameId = null;        // the game the stats or abandoned screen shows (null = current)
+  let backScreen = 'home';      // where the back link on the stats screen goes
+  let historyTab = 'games';     // 'games' | 'players'
+  let statsShownKey = null;     // the game whose stats screen has already played its confetti
   let blockedMessage = null;    // set when storage holds data this version cannot open
   let readOnly = false;         // when true nothing is written, so unreadable data is never overwritten
   let editingId = null;         // player being renamed in setup
@@ -1142,6 +1421,20 @@ const Golf = (() => {
   // ---- toast and save banner -------------------------------------------------
 
   function toast(message) {
+    const line = document.querySelector('.scoring [data-flash]');
+    if (line) {
+      // While scoring, the confirmation goes in the now-up bar, so it never covers a cell.
+      clearTimeout(toastTimer);
+      line.textContent = message;
+      line.classList.add('flash');
+      sizeDock();
+      toastTimer = setTimeout(() => {
+        line.textContent = line.dataset.next || ' ';
+        line.classList.remove('flash');
+        sizeDock();
+      }, FLASH_MS);
+      return;
+    }
     const el = $('#toast');
     el.textContent = message;
     el.hidden = false;
@@ -1218,13 +1511,21 @@ const Golf = (() => {
   function commit(next, nextScreen = null) {
     state = next;
     writeState(state);
-    if (nextScreen) screen = nextScreen;
+    if (nextScreen) {
+      screen = nextScreen;
+      viewGameId = null;
+      backScreen = 'home';
+    }
     setupError = '';
     render();
   }
 
-  function go(name) {
+  // Moves to a screen. options.gameId picks the game for the stats or abandoned screen,
+  // and options.back the screen the stats back link returns to.
+  function go(name, options = {}) {
     screen = name;
+    viewGameId = options.gameId || null;
+    backScreen = options.back || 'home';
     setupError = '';
     menuOpen = false;
     editing = null;
@@ -1359,7 +1660,7 @@ const Golf = (() => {
       <button class="btn ${active ? '' : 'big primary'}" data-action="new">New game</button>
       <button class="playing" data-action="players"><span>${playingLine}</span><span aria-hidden="true">›</span></button>
       <nav class="links">
-        <button class="link" data-action="soon">History</button>
+        <button class="link" data-action="history">History</button>
         <button class="link" data-action="players">Players</button>
         <button class="link" data-action="soon">Export all data</button>
         <button class="link" data-action="soon">Import data</button>
@@ -1436,7 +1737,8 @@ const Golf = (() => {
     }).join('');
   }
 
-  function renderCard(game, ci, cur) {
+  // readOnly (an abandoned game in history): no cursor, every started card is open, nothing to tap.
+  function renderCard(game, ci, cur, readOnly = false) {
     const entry = game.courses[ci];
     const course = Golf.getCourse(entry.courseId);
     const status = courseStatus(game, ci, cur);
@@ -1450,9 +1752,11 @@ const Golf = (() => {
     // The regular cursor on this course (not a playoff entry).
     const regHere = here && !cur.playoff;
     // A playoff or replay on this course keeps its card open.
-    const open = (here && (cur.playoff || cur.replay)) || cardOpen(ci, status);
+    const open = readOnly || (here && (cur.playoff || cur.replay)) || cardOpen(ci, status);
     const order = regHere && !cur.replay ? Golf.turnOrder(game, ci, cur.hole) : null;
-    const head = `<button class="course-head" data-action="toggle-card" data-ci="${ci}" aria-expanded="${open}">${inner}</button>`;
+    const head = readOnly
+      ? `<div class="course-head static">${inner}</div>`
+      : `<button class="course-head" data-action="toggle-card" data-ci="${ci}" aria-expanded="${open}">${inner}</button>`;
     const names = game.playerIds.map((id) => {
       const badge = order ? `<span class="badge">${order.indexOf(id) + 1}</span>` : '';
       return `<th scope="col">${badge}<span class="pn">${esc(nameOf(id))}</span></th>`;
@@ -1510,6 +1814,12 @@ const Golf = (() => {
   }
 
   // The now-up bar for a regulation cell.
+  // The last line of the bar. Tap confirmations replace its text for a moment (see toast).
+  function flashLine(text) {
+    const shown = text || ' ';
+    return `<div class="meta next"><span data-flash data-next="${esc(text)}">${esc(shown)}</span></div>`;
+  }
+
   function regularBar(game, cur) {
     const course = Golf.getCourse(game.courses[cur.courseIndex].courseId);
     const player = Golf.getPlayer(state, cur.playerId);
@@ -1522,7 +1832,7 @@ const Golf = (() => {
           <div class="meta"><span>${esc(course.name)} · hole ${cur.hole} / ${course.holes}</span>${par !== null ? `<span>Par ${par}</span>` : ''}</div>
           <div class="who">${esc(player.name)} is up</div>
           <div class="meta"><span>Total ${totalText}</span><span>${esc(prior)}</span></div>
-          ${nextId ? `<div class="meta next"><span>next: ${esc(nameOf(nextId))}</span></div>` : ''}
+          ${flashLine(nextId ? `next: ${nameOf(nextId)}` : '')}
         </section>`;
   }
 
@@ -1537,6 +1847,7 @@ const Golf = (() => {
           <div class="meta"><span>Replay · ${esc(player.name)} · ${esc(course.name)} hole ${cur.hole}</span></div>
           <div class="who">${esc(player.name)} is up</div>
           <div class="meta"><span>Total ${totalText}</span><span>${esc(prior)}</span></div>
+          ${flashLine('')}
         </section>`;
   }
 
@@ -1555,7 +1866,7 @@ const Golf = (() => {
           <div class="meta"><span>Playoff · ${esc(course.name)} hole ${cur.hole} (P${k + 1})</span></div>
           <div class="who">${esc(player.name)} is up</div>
           <div class="meta"><span>Total ${totalText}</span><span>${esc(prev)}</span></div>
-          ${nextId ? `<div class="meta next"><span>next: ${esc(nameOf(nextId))}</span></div>` : ''}
+          ${flashLine(nextId ? `next: ${nameOf(nextId)}` : '')}
         </section>`;
   }
 
@@ -1636,51 +1947,247 @@ const Golf = (() => {
       </div>`;
   }
 
-  function viewOver() {
-    const game = Golf.getGame(state, state.currentGameId);
-    if (!game) return '';
-    const sections = game.courses.map((entry, ci) => {
-      const course = Golf.getCourse(entry.courseId);
-      const r = Golf.courseResult(game, ci);
-      if (!game.playerIds.some((id) => entry.scores[id].some((v) => v !== null))) {
-        return `<section class="card"><h2>${esc(course.name)}</h2><p class="hint">Not played</p></section>`;
-      }
-      let verdict = game.endedEarly ? 'Not finished' : 'No winner (skips)';
-      if (r.winnerId) verdict = `${esc(nameOf(r.winnerId))} wins`;
-      else if (r.tied) verdict = 'Tied for first';
-      if (r.decidedBy === 'playoff') verdict += ` · won in a playoff on P${r.decidedOn}`;
-      const rows = Golf.standings(game, ci).map((id) => {
-        const t = Golf.courseTotal(game, ci, id);
-        const crown = id === r.winnerId ? ' 👑' : '';
-        const par = course.par ? ` (${formatPar(t.vsPar)})` : '';
-        return `<li class="row"><span class="pname">${esc(nameOf(id))}${crown}</span><span>${t.total}${t.skips ? '*' : ''}${par}</span></li>`;
-      }).join('');
-      return `<section class="card"><h2>${esc(course.name)}</h2><p class="hint">${verdict}</p><ul class="list">${rows}</ul></section>`;
-    }).join('');
-    const note = game.endedEarly ? '<p class="hint">Ended early. Holes that were not scored are blank.</p>' : '';
-    return `
-      <header class="top"><h1>Game over</h1></header>
-      ${note}
-      ${sections}
-      <button class="btn big" data-action="reopen">Reopen game</button>
-      <button class="btn big primary" data-action="home">Home</button>`;
+  const ordinal = (n) => {
+    if (n === 1) return 'best';
+    const suffix = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return `${n}${suffix[(v - 20) % 10] || suffix[v] || suffix[0]} best`;
+  };
+  const joinNames = (names) => (names.length <= 2
+    ? names.join(' and ')
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const formatDate = (iso) => {
+    try {
+      return `${new Date(iso).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatTime(iso)}`;
+    } catch (e) {
+      return '';
+    }
+  };
+
+  // The stats screen only shows a game that is finished.
+  function statsGame() {
+    const game = Golf.getGame(state, viewGameId || state.currentGameId);
+    return game && game.status === 'finished' ? game : null;
   }
 
-  const VIEWS = { setup: viewSetup, home: viewHome, scoring: viewScoring, over: viewOver };
+  function hasNewRecord(game) {
+    return Golf.gameStats(state, game.id).courses.some((c) => c.standings
+      .some((r) => r.record && r.record.kind === 'new'));
+  }
+
+  // Session summary (spec 8.2): the day's champion(s) and all-time head-to-head.
+  function sessionCard(game, stats) {
+    const wins = (id) => stats.wins[id];
+    let headline;
+    if (stats.champions.length === 0) {
+      headline = 'No course winners yet';
+    } else if (stats.champions.length === 1) {
+      const champ = stats.champions[0];
+      const runnerUp = Math.max(0, ...game.playerIds.filter((id) => id !== champ).map(wins));
+      headline = `🏆 ${esc(nameOf(champ))} wins the day, ${plural(wins(champ), 'course')}`
+        + ` to ${runnerUp}`;
+    } else {
+      const names = stats.champions.map((id) => esc(nameOf(id)));
+      headline = `🏆 Co-champions: ${joinNames(names)}, ${wins(stats.champions[0]) === 1 ? '1 course' : `${wins(stats.champions[0])} courses`} each`;
+    }
+    const tally = game.playerIds.map((id) => `${esc(nameOf(id))} ${wins(id)}`).join(' · ');
+    const pairs = stats.headToHead
+      .filter((p) => p.aWins + p.bWins > 0)
+      .map((p) => `<li>${esc(nameOf(p.a))} vs ${esc(nameOf(p.b))}: ${p.aWins}–${p.bWins} in course wins</li>`)
+      .join('');
+    return `<section class="card stats-head">
+        <p class="champ">${headline}</p>
+        <p class="hint">Course wins today: ${tally}</p>
+        ${pairs ? `<p class="hint">All-time head to head</p><ul class="highlights">${pairs}</ul>` : ''}
+      </section>`;
+  }
+
+  // One player's line on a course card: total, record, and percentiles (spec 8.1).
+  function standingBlock(game, course, c, row) {
+    const crown = row.playerId === c.winnerId ? ' 👑' : '';
+    const total = `${row.total}${row.complete ? '' : '*'}`;
+    const par = course.par ? ` (${formatPar(row.vsPar)})` : '';
+    const lines = [];
+    if (row.record && row.record.kind === 'new') {
+      lines.push(`<p class="record">🎉 New personal record! ${row.total} (was ${row.record.previousBest})</p>`);
+    } else if (row.record && row.record.kind === 'first') {
+      lines.push('<p class="quiet">First round, record set</p>');
+    } else if (row.record && row.record.kind === 'tied') {
+      lines.push('<p class="quiet">Tied your best</p>');
+    }
+    if (row.complete) {
+      if (row.pctAll !== null) {
+        lines.push(`<p class="note">Better than ${row.pctAll}% of all ${esc(course.name)} rounds</p>`);
+      }
+      if (row.pctPersonal !== null) {
+        const rank = row.rank === 1 ? `your best of ${row.ofCount}` : `your ${ordinal(row.rank)} of ${row.ofCount}`;
+        lines.push(`<p class="note">Better than ${row.pctPersonal}% of your rounds · ${rank}</p>`);
+      } else {
+        lines.push(`<p class="note">Round ${row.priorCount + 1} on record, percentiles start at ${Golf.MIN_POOL}</p>`);
+      }
+    }
+    return `<li class="standing">
+        <div class="top-line"><span>${esc(nameOf(row.playerId))}${crown}</span><span>${total}${par}</span></div>
+        ${lines.join('')}
+      </li>`;
+  }
+
+  // One course card on the stats screen (spec 8.1).
+  function courseStatsCard(game, c) {
+    const course = Golf.getCourse(c.courseId);
+    if (!c.played) {
+      return `<section class="card"><h2>${esc(c.name)}</h2><p class="hint">Not played</p></section>`;
+    }
+    const r = Golf.courseResult(game, c.courseIndex);
+    let verdict = game.endedEarly ? 'Not finished' : 'No winner (skips)';
+    if (c.winnerId) verdict = `${esc(nameOf(c.winnerId))} wins`;
+    else if (r.tied) verdict = 'Tied for first';
+    if (c.decidedBy === 'playoff') verdict += ` · won in a playoff on P${c.decidedOn}`;
+    const rows = c.standings.map((row) => standingBlock(game, course, c, row)).join('');
+    const highlights = [];
+    if (course.par) {
+      const ones = c.standings.filter((row) => row.holesInOne > 0)
+        .map((row) => `${esc(nameOf(row.playerId))} ${row.holesInOne}`);
+      if (ones.length) highlights.push(`<li>🎯 Holes-in-one: ${ones.join(', ')}</li>`);
+    }
+    if (c.hardestHole) {
+      highlights.push(`<li>🧗 Hardest hole: ${c.hardestHole.hole} (average ${c.hardestHole.avg.toFixed(1)})</li>`);
+    }
+    const best = c.bestHoles[0];
+    if (best) {
+      highlights.push(`<li>⭐ Best hole: ${esc(nameOf(best.playerId))} on ${best.hole}`
+        + ` (${best.score} vs group ${best.avg.toFixed(1)})</li>`);
+    }
+    return `<section class="card">
+        <h2>${esc(c.name)}</h2>
+        <p class="hint">${verdict}</p>
+        <ul class="list-reset">${rows}</ul>
+        ${highlights.length ? `<ul class="highlights">${highlights.join('')}</ul>` : ''}
+      </section>`;
+  }
+
+  // Stats (spec 8): one scrollable screen. Reopen only for the latest finished game when
+  // no game is in progress.
+  function viewStats() {
+    const game = statsGame();
+    if (!game) return '';
+    const stats = Golf.gameStats(state, game.id);
+    const latest = Golf.latestFinishedGameId(state) === game.id && !Golf.getActiveGame(state);
+    const back = backScreen === 'history' ? '<button class="link" data-action="history">&larr; History</button>'
+      : '<button class="link" data-action="home">&larr; Home</button>';
+    const note = game.endedEarly ? '<p class="hint">Ended early. Holes that were not scored are blank.</p>' : '';
+    return `
+      <header class="top">${back}<h1>Game stats</h1></header>
+      <p class="hint">${esc(formatDate(game.startedAt))}${game.playerIds.length ? ` · ${game.playerIds.map((id) => esc(nameOf(id))).join(', ')}` : ''}</p>
+      ${sessionCard(game, stats)}
+      ${note}
+      ${stats.courses.map((c) => courseStatsCard(game, c)).join('')}
+      <div class="actions">
+        <button class="btn big" disabled>Copy scores<span class="sub">Coming in a later step</span></button>
+        ${latest ? '<button class="btn big" data-action="reopen">Reopen game</button>' : ''}
+        <button class="btn big primary" data-action="home">Home</button>
+      </div>`;
+  }
+
+  // An abandoned game, read-only (spec 8.3). Abandoned games are not in stats.
+  function viewAbandoned() {
+    const game = Golf.getGame(state, viewGameId);
+    if (!game) return '';
+    const cards = game.courses.map((_, ci) => renderCard(game, ci, null, true)).join('');
+    const names = game.playerIds.map((id) => esc(nameOf(id))).join(', ');
+    return `
+      <header class="top"><button class="link" data-action="history">&larr; History</button><h1>Abandoned</h1></header>
+      <p class="hint">${esc(formatDate(game.startedAt))} · ${names}. Abandoned games are left out of stats.</p>
+      ${cards}`;
+  }
+
+  // History (spec 8.3): finished and abandoned games, newest first, and per-player history.
+  function gamesList() {
+    const games = Golf.listGames(state).filter((g) => g.status === 'finished' || g.status === 'abandoned');
+    if (games.length === 0) return '<p class="hint">No finished games yet.</p>';
+    return games.map((g) => {
+      const names = g.playerIds.map((id) => esc(nameOf(id))).join(', ');
+      if (g.status === 'abandoned') {
+        return `<button class="game-row abandoned" data-action="open-abandoned" data-id="${esc(g.id)}">
+            <span>${esc(formatDate(g.startedAt))} · Abandoned</span>
+            <span class="sub-line">${names}</span>
+          </button>`;
+      }
+      const wins = g.winners.map((w) => `${esc(Golf.getCourse(w.courseId).name)}: ${esc(nameOf(w.winnerId))}`);
+      return `<button class="game-row" data-action="open-stats" data-id="${esc(g.id)}">
+          <span>${esc(formatDate(g.startedAt))}${g.endedEarly ? ' · ended early' : ''}</span>
+          <span class="sub-line">${names}</span>
+          <span class="sub-line">${wins.length ? wins.join(' · ') : 'No course winners'}</span>
+        </button>`;
+    }).join('');
+  }
+
+  // A tiny trend line of the last totals. Lower is better, so lower totals plot higher.
+  function sparkline(values) {
+    const w = 72;
+    const h = 24;
+    const pad = 3;
+    const lo = Math.min(...values);
+    const hi = Math.max(...values);
+    const x = (i) => (values.length === 1 ? w / 2 : pad + (i * (w - 2 * pad)) / (values.length - 1));
+    const y = (v) => (hi === lo ? h / 2 : pad + ((v - lo) / (hi - lo)) * (h - 2 * pad));
+    const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    const last = values.length - 1;
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="Last totals: ${values.join(', ')}">
+        <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${x(last).toFixed(1)}" cy="${y(values[last]).toFixed(1)}" r="2.5" fill="currentColor"/>
+      </svg>`;
+  }
+
+  function playersList() {
+    const players = Golf.visiblePlayers(state);
+    if (players.length === 0) return '<p class="hint">No players yet. Add them under Players on Home.</p>';
+    return players.map((p) => {
+      const rows = Golf.playerHistory(state, p.id).filter((r) => r.rounds > 0);
+      const body = rows.length
+        ? rows.map((r) => `<div class="prow">
+            <div>
+              <strong>${esc(r.name)}</strong>
+              <div class="sub-line">${plural(r.rounds, 'round')} · best ${r.best} · average ${r.average.toFixed(1)}</div>
+            </div>
+            ${sparkline(r.last5)}
+          </div>`).join('')
+        : '<p class="hint">No finished rounds yet.</p>';
+      return `<section class="card"><h2><span class="dot" style="background:${esc(p.color)}"></span>${esc(p.name)}</h2>${body}</section>`;
+    }).join('');
+  }
+
+  function viewHistory() {
+    const tab = (name, label) => `<button class="tab" role="tab" aria-selected="${historyTab === name}" data-action="history-tab" data-tab="${name}">${label}</button>`;
+    return `
+      <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>History</h1></header>
+      <div class="tabs" role="tablist">${tab('games', 'Games')}${tab('players', 'Players')}</div>
+      ${historyTab === 'games' ? gamesList() : playersList()}`;
+  }
+
+  const VIEWS = {
+    setup: viewSetup, home: viewHome, scoring: viewScoring, stats: viewStats, history: viewHistory, abandoned: viewAbandoned,
+  };
 
   // The numpad sits over the page, so the page gets padding equal to its height.
+  // The sticky names row of each card sits just under the now-up bar, so --bar-h is the
+  // bar's height (the names row is pinned using it in CSS).
   function sizeDock() {
     const dock = $('#dock');
     if (dock) document.documentElement.style.setProperty('--dock-h', `${dock.offsetHeight}px`);
+    const bar = document.querySelector('.scoring .now');
+    if (bar) document.documentElement.style.setProperty('--bar-h', `${bar.offsetHeight}px`);
   }
 
-  // Scrolls so the cursor cell sits between the now-up bar and the numpad.
+  // Scrolls so the cursor cell sits between the pinned bar and names row and the numpad.
   function scrollToCursor() {
     const cell = document.querySelector('.scoring td.cur');
     const bar = document.querySelector('.scoring .now');
     const dock = $('#dock');
     if (!cell || !bar || !dock) return;
-    const top = bar.getBoundingClientRect().bottom + 8;
+    const head = cell.closest('table') ? cell.closest('table').querySelector('thead') : null;
+    const top = bar.getBoundingClientRect().bottom + (head ? head.offsetHeight : 0) + 8;
     const bottom = dock.getBoundingClientRect().top - 8;
     const r = cell.getBoundingClientRect();
     if (r.top >= top && r.bottom <= bottom) return;
@@ -1700,10 +2207,14 @@ const Golf = (() => {
     }
     if (screen === 'scoring' && !Golf.getActiveGame(state)) {
       const current = Golf.getGame(state, state.currentGameId);
-      screen = current && current.status === 'finished' ? 'over' : 'home';
+      screen = current && current.status === 'finished' ? 'stats' : 'home';
+      viewGameId = null;
     }
+    if (screen === 'stats' && !viewGameId) viewGameId = state.currentGameId;
     if (editing && !editTargetOk()) editing = null;
     document.body.classList.toggle('scoring', screen === 'scoring');
+    // The sticky bar height only means something while scoring.
+    if (screen !== 'scoring') document.documentElement.style.removeProperty('--bar-h');
     app.innerHTML = VIEWS[screen]();
     if (screen === 'setup' && editingId) {
       const input = app.querySelector('.rename input');
@@ -1719,6 +2230,39 @@ const Golf = (() => {
     } else {
       releaseAwake();
     }
+    // Confetti once each time the stats screen opens for a game with a new record.
+    if (screen === 'stats') {
+      if (statsShownKey !== viewGameId) {
+        statsShownKey = viewGameId;
+        const game = statsGame();
+        if (game && hasNewRecord(game)) confetti();
+      }
+    } else {
+      statsShownKey = null;
+    }
+  }
+
+  // Confetti (spec 8.1): a few dozen colored pieces fall once, then the layer is removed.
+  // Skipped under prefers-reduced-motion.
+  function confetti() {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const layer = document.createElement('div');
+    layer.className = 'confetti-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    const colors = [...Golf.PALETTE, '#f5c542', '#ff8fab'];
+    for (let i = 0; i < 40; i += 1) {
+      const piece = document.createElement('div');
+      piece.className = 'confetti';
+      piece.style.left = `${Math.random() * 100}%`;
+      piece.style.background = colors[i % colors.length];
+      piece.style.animationDuration = `${(1.8 + Math.random() * 1.2).toFixed(2)}s`;
+      piece.style.animationDelay = `${(Math.random() * 0.4).toFixed(2)}s`;
+      piece.style.setProperty('--dx', `${Math.round((Math.random() - 0.5) * 160)}px`);
+      piece.style.setProperty('--rot', `${Math.round(360 + Math.random() * 540)}deg`);
+      layer.appendChild(piece);
+    }
+    document.body.appendChild(layer);
+    setTimeout(() => layer.remove(), 3000);
   }
 
   // ---- actions ---------------------------------------------------------------
@@ -1783,14 +2327,14 @@ const Golf = (() => {
       const message = `${nameOf(editing.playerId)} · ${where} → ${valueLabel(value)}`;
       editing = null;
       menuOpen = false;
-      commit(next, after.status === 'finished' ? 'over' : null);
+      commit(next, after.status === 'finished' ? 'stats' : null);
       toast(message);
       return;
     }
     const message = pressMessage(game, after, cur, value);
     menuOpen = false;
     scrollPending = after.status === 'active';
-    commit(next, after.status === 'finished' ? 'over' : null);
+    commit(next, after.status === 'finished' ? 'stats' : null);
     toast(message);
   }
 
@@ -1816,7 +2360,7 @@ const Golf = (() => {
     editing = null;
     menuOpen = false;
     scrollPending = true;
-    commit(next, after.status === 'finished' ? 'over' : 'scoring');
+    commit(next, after.status === 'finished' ? 'stats' : 'scoring');
     toast(`${kind === 'undo' ? 'Undid' : 'Redid'} ${nameOf(action.playerId)} · ${valueLabel(action.next)}`);
   }
 
@@ -1907,7 +2451,7 @@ const Golf = (() => {
     const game = Golf.getActiveGame(state);
     if (!game) return;
     try {
-      commit(Golf.finishAnyway(state, game.id, nowISO()), 'over');
+      commit(Golf.finishAnyway(state, game.id, nowISO()), 'stats');
     } catch (e) {
       toast(e.message);
     }
@@ -1917,7 +2461,7 @@ const Golf = (() => {
     const game = Golf.getActiveGame(state);
     if (!game) return;
     try {
-      commit(Golf.finishGame(state, game.id, nowISO()), 'over');
+      commit(Golf.finishGame(state, game.id, nowISO()), 'stats');
     } catch (e) {
       toast(e.message);
     }
@@ -1927,14 +2471,14 @@ const Golf = (() => {
     const game = Golf.getActiveGame(state);
     if (!game || !confirm('End this game now? Holes that were not scored stay blank.')) return;
     try {
-      commit(Golf.endEarly(state, game.id, nowISO()), 'over');
+      commit(Golf.endEarly(state, game.id, nowISO()), 'stats');
     } catch (e) {
       toast(e.message);
     }
   }
 
   function reopenNow() {
-    const id = state.currentGameId;
+    const id = viewGameId || state.currentGameId;
     const others = state.games.some((g) => g.status === 'active' && g.id !== id);
     if (others && !confirm('Another game is in progress. Abandon it and reopen this one?')) return;
     try {
@@ -1973,6 +2517,10 @@ const Golf = (() => {
       case 'new':
       case 'start': startNewGame(); break;
       case 'resume': go('scoring'); break;
+      case 'history': go('history'); break;
+      case 'history-tab': historyTab = el.dataset.tab === 'players' ? 'players' : 'games'; render(); break;
+      case 'open-stats': go('stats', { gameId: id, back: 'history' }); break;
+      case 'open-abandoned': go('abandoned', { gameId: id }); break;
       case 'reroll': reroll(); break;
       case 'undo': step('undo'); break;
       case 'redo': step('redo'); break;
@@ -2040,7 +2588,7 @@ const Golf = (() => {
   if (Golf.visiblePlayers(state).length === 0) {
     screen = 'setup';
   } else {
-    screen = current && current.status === 'finished' ? 'over' : 'home';
+    screen = current && current.status === 'finished' ? 'stats' : 'home';
   }
   render();
 })();

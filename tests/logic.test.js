@@ -987,3 +987,289 @@ test('reopening a game with skips offers the skip decision again', () => {
   assert.strictEqual(Golf.gamePhase(game), 'skipDecision');
   assert.strictEqual(game.awaitingFinish, false);
 });
+
+// ---- stats (step 5) --------------------------------------------------------
+
+const DAY = (n) => `2026-10-${String(n).padStart(2, '0')}T19:00:00.000Z`;
+
+// Mini Golf card for a total: 9 holes as even as possible, extra strokes on the first holes.
+function cardFor(total, holes = 9) {
+  const base = Math.floor(total / holes);
+  const extra = total % holes;
+  return Array.from({ length: holes }, (_, h) => base + (h < extra ? 1 : 0));
+}
+
+// Per-hole value on Aces and Duffleboard when no override is given: lowest total wins.
+const COURSE_VALUE = { Sam: 2, Adam: 3, Jo: 4 };
+let gameSeed = 0;
+
+// Plays one whole game with the roster in state. miniTotals maps name -> Mini Golf total.
+// cell(name, courseIndex, hole) may return a value to override a regulation cell (undefined
+// keeps the default). Every score is recorded at finishedAt, so the last one finishes the game.
+function playGame(state, miniTotals, finishedAt, { startedAt = finishedAt, cell = null } = {}) {
+  const nameById = Object.fromEntries(state.players.map((p) => [p.id, p.name]));
+  const cards = Object.fromEntries(Object.entries(miniTotals).map(([n, t]) => [n, cardFor(t)]));
+  let s = Golf.newGame(state, seeded(gameSeed += 1), startedAt);
+  const gameId = s.currentGameId;
+  for (let cur = Golf.cursor(gameOf(s)); cur; cur = Golf.cursor(gameOf(s))) {
+    const name = nameById[cur.playerId];
+    let value = cell ? cell(name, cur.courseIndex, cur.hole) : undefined;
+    if (value === undefined) {
+      value = cur.courseIndex === 0 ? cards[name][cur.hole - 1] : COURSE_VALUE[name];
+    }
+    s = Golf.recordScore(s, gameId, value, finishedAt);
+  }
+  return { state: s, gameId };
+}
+
+const nameOfPid = (state, pid) => Golf.getPlayer(state, pid).name;
+const rowFor = (state, stats, ci, name) => stats.courses[ci].standings
+  .find((r) => nameOfPid(state, r.playerId) === name);
+
+// Sam, Adam and Jo, one game a day. Sam's seventh total (24) sets a new record (old best 26).
+const SAM = [30, 28, 26, 27, 29, 31, 24];
+const ADAM = [34, 35, 36, 37, 38, 39, 40];
+const JO = [41, 42, 43, 44, 45, 46, 47];
+function sevenGames() {
+  let state = withPlayers(['Sam', 'Adam', 'Jo']);
+  const ids = [];
+  SAM.forEach((_, i) => {
+    const r = playGame(state, { Sam: SAM[i], Adam: ADAM[i], Jo: JO[i] }, DAY(i + 1));
+    state = r.state;
+    ids.push(r.gameId);
+  });
+  return { state, ids };
+}
+
+test('percentileOf counts beaten rounds plus half of the tied, over the pool', () => {
+  const pool = [20, 22, 24, 26, 28];
+  assert.strictEqual(Golf.percentileOf(24, pool), 50); // beats 26, 28 and half of 24: 2.5 / 5
+  assert.strictEqual(Golf.percentileOf(20, pool), 90); // beats 22, 24, 26, 28 and half of 20
+  assert.strictEqual(Golf.percentileOf(30, pool), 0);
+  assert.strictEqual(Golf.percentileOf(24, [24, 24, 24, 24, 24]), 50);
+  assert.strictEqual(Golf.percentileOf(28, [20, 22, 24, 26, 30], false), 80); // higher is better
+});
+
+test('percentileOf is null below 5 rounds in the pool, including an empty pool', () => {
+  assert.strictEqual(Golf.percentileOf(24, [20, 22, 24, 26]), null);
+  assert.strictEqual(Golf.percentileOf(24, []), null);
+  assert.strictEqual(Golf.MIN_POOL, 5);
+});
+
+test('recordFor: first, new (strictly better), tied, and null otherwise', () => {
+  assert.deepStrictEqual(plain(Golf.recordFor(24, [])), { kind: 'first' });
+  assert.deepStrictEqual(plain(Golf.recordFor(24, [26, 30])), { kind: 'new', previousBest: 26 });
+  assert.deepStrictEqual(plain(Golf.recordFor(26, [26, 30])), { kind: 'tied' });
+  assert.strictEqual(Golf.recordFor(27, [26, 30]), null);
+  assert.deepStrictEqual(plain(Golf.recordFor(30, [26, 28], false)), { kind: 'new', previousBest: 28 });
+});
+
+test('the seventh round: new record, percentiles over prior rounds, and personal rank', () => {
+  const { state, ids } = sevenGames();
+  const stats = Golf.gameStats(state, ids[6]);
+  assert.strictEqual(stats.courses[0].name, 'Mini Golf');
+  const sam = rowFor(state, stats, 0, 'Sam');
+  assert.strictEqual(stats.courses[0].winnerId, sam.playerId);
+  assert.deepStrictEqual(plain(sam.record), { kind: 'new', previousBest: 26 });
+  assert.strictEqual(sam.pctAll, 100); // 18 prior rounds, all worse than 24
+  assert.strictEqual(sam.pctPersonal, 100); // 6 prior rounds
+  assert.strictEqual(sam.rank, 1);
+  assert.strictEqual(sam.ofCount, 7);
+  assert.strictEqual(sam.priorCount, 6);
+  assert.strictEqual(sam.allPriorCount, 18);
+  const adam = rowFor(state, stats, 0, 'Adam');
+  assert.strictEqual(adam.record, null); // 40 is worse than Adam's best of 34
+  assert.strictEqual(adam.pctAll, 33); // 6 of 18 prior rounds (Jo's) are worse
+  assert.strictEqual(adam.pctPersonal, 0);
+  assert.strictEqual(adam.rank, 7);
+  assert.strictEqual(adam.ofCount, 7);
+  assert.strictEqual(rowFor(state, stats, 0, 'Jo').pctAll, 0);
+});
+
+test('percentiles start at 5 prior rounds: the personal pool has 4 and then 5', () => {
+  const { state, ids } = sevenGames();
+  const fourPriors = rowFor(state, Golf.gameStats(state, ids[4]), 0, 'Sam');
+  assert.strictEqual(fourPriors.priorCount, 4);
+  assert.strictEqual(fourPriors.pctPersonal, null);
+  assert.notStrictEqual(fourPriors.pctAll, null); // the all-players pool already has 12
+  const fivePriors = rowFor(state, Golf.gameStats(state, ids[5]), 0, 'Sam');
+  assert.strictEqual(fivePriors.priorCount, 5);
+  assert.strictEqual(fivePriors.pctPersonal, 0); // 31 is worse than all five priors
+  const first = rowFor(state, Golf.gameStats(state, ids[0]), 0, 'Sam');
+  assert.deepStrictEqual(plain(first.record), { kind: 'first' });
+  assert.strictEqual(first.pctAll, null);
+  assert.strictEqual(first.rank, 1);
+  assert.strictEqual(first.ofCount, 1);
+});
+
+test('a score equal to the best is a tie for the record, not a new one', () => {
+  let state = withPlayers(['Sam', 'Adam']);
+  state = playGame(state, { Sam: 24, Adam: 30 }, DAY(1)).state;
+  const { state: after, gameId } = playGame(state, { Sam: 24, Adam: 31 }, DAY(2));
+  assert.deepStrictEqual(plain(rowFor(after, Golf.gameStats(after, gameId), 0, 'Sam').record), { kind: 'tied' });
+});
+
+test('prior rounds skip abandoned, active and incomplete rounds', () => {
+  let state = withPlayers(['Sam', 'Adam']);
+  state = playGame(state, { Sam: 20, Adam: 30 }, DAY(1)).state; // counts
+  state = Golf.newGame(state, seeded(7), DAY(2)); // abandoned by the next newGame
+  const abandoned = state.currentGameId;
+  state = Golf.recordScore(state, abandoned, 1, DAY(2));
+  state = Golf.recordScore(state, abandoned, 1, DAY(2));
+  state = Golf.newGame(state, seeded(8), DAY(3));
+  const endedEarly = state.currentGameId;
+  state = Golf.recordScore(state, endedEarly, 1, DAY(3));
+  state = Golf.recordScore(state, endedEarly, 1, DAY(3));
+  state = Golf.endEarly(state, endedEarly, DAY(4)); // finished, with incomplete cards
+  state = Golf.newGame(state, seeded(9), DAY(5)); // left active
+  assert.strictEqual(Golf.getGame(state, abandoned).status, 'abandoned');
+  const { state: done, gameId } = playGame(state, { Sam: 25, Adam: 30 }, DAY(6));
+  const sam = rowFor(done, Golf.gameStats(done, gameId), 0, 'Sam');
+  assert.strictEqual(sam.priorCount, 1);
+  assert.strictEqual(sam.allPriorCount, 2);
+  assert.strictEqual(sam.record, null); // 25 is not better than the 20 that counts
+  const row = rowFor(done, Golf.gameStats(done, endedEarly), 0, 'Sam');
+  assert.strictEqual(row.complete, false);
+  assert.strictEqual(row.record, null);
+  assert.strictEqual(row.pctAll, null);
+  assert.strictEqual(row.rank, null);
+});
+
+test('prior rounds are chosen by finishedAt, not startedAt', () => {
+  const state = withPlayers(['Sam', 'Adam']);
+  // Started first, finished last: it is not a prior round for the game that finished earlier.
+  const late = playGame(state, { Sam: 20, Adam: 30 }, DAY(5), { startedAt: DAY(1) });
+  const early = playGame(late.state, { Sam: 25, Adam: 30 }, DAY(3), { startedAt: DAY(2) });
+  assert.strictEqual(rowFor(early.state, Golf.gameStats(early.state, early.gameId), 0, 'Sam').priorCount, 0);
+  const lateRow = rowFor(early.state, Golf.gameStats(early.state, late.gameId), 0, 'Sam');
+  assert.deepStrictEqual(plain(lateRow.record), { kind: 'new', previousBest: 25 });
+});
+
+test('a reopened and refinished game recomputes its record and percentiles', () => {
+  let { state, ids } = sevenGames();
+  const sam = Golf.getGame(state, ids[6]).playerIds[0];
+  // Reopen the record game and add 4 strokes to Sam's card: 24 becomes 28.
+  state = Golf.reopenGame(state, ids[6]);
+  state = Golf.editScore(state, ids[6], 0, 1, sam, 4, DAY(9));
+  state = Golf.editScore(state, ids[6], 0, 7, sam, 3, DAY(9));
+  state = Golf.editScore(state, ids[6], 0, 8, sam, 3, DAY(9));
+  state = Golf.editScore(state, ids[6], 0, 9, sam, 3, DAY(9));
+  state = Golf.finishGame(state, ids[6], DAY(9));
+  const redone = rowFor(state, Golf.gameStats(state, ids[6]), 0, 'Sam');
+  assert.strictEqual(redone.total, 28);
+  assert.strictEqual(redone.record, null);
+  // Game 2 (Sam 28) now finishes after games 3 to 7, so its prior rounds are six, not one.
+  state = Golf.reopenGame(state, ids[1]);
+  state = Golf.finishGame(state, ids[1], DAY(10));
+  const second = rowFor(state, Golf.gameStats(state, ids[1]), 0, 'Sam');
+  assert.strictEqual(second.priorCount, 6);
+  assert.strictEqual(second.pctPersonal, 58); // beats 30, 29, 31 and half of 28: 3.5 / 6
+});
+
+test('holes-in-one count 1s on Mini Golf only', () => {
+  const state = withPlayers(['Sam', 'Adam']);
+  const { state: after, gameId } = playGame(state, { Sam: 12, Adam: 30 }, DAY(1), {
+    cell: (name, ci) => (ci === 1 && name === 'Sam' ? 1 : undefined),
+  });
+  const stats = Golf.gameStats(after, gameId);
+  assert.strictEqual(rowFor(after, stats, 0, 'Sam').holesInOne, 6); // cardFor(12) has six 1s
+  assert.strictEqual(rowFor(after, stats, 0, 'Adam').holesInOne, 0);
+  assert.strictEqual(stats.courses[1].standings[0].holesInOne, null); // Aces has no par
+});
+
+test('hardest hole is the highest average; best hole is the biggest beat of the group average', () => {
+  const state = withPlayers(['Sam', 'Adam', 'Jo']);
+  const { state: after, gameId } = playGame(state, { Sam: 27, Adam: 36, Jo: 45 }, DAY(1), {
+    cell: (name, ci, hole) => (ci === 0 && hole === 5 ? 7 : undefined),
+  });
+  const stats = Golf.gameStats(after, gameId);
+  const mini = stats.courses[0];
+  assert.deepStrictEqual(plain(mini.hardestHole), { hole: 5, avg: 7 });
+  // Other holes average 4 (3, 4, 5). Sam beats it by 1 on every hole; the first hole wins the tie.
+  assert.deepStrictEqual(plain(mini.bestHoles[0]), {
+    playerId: rowFor(after, stats, 0, 'Sam').playerId, hole: 1, score: 3, avg: 4, beat: 1,
+  });
+});
+
+test('session champions: most course wins, with co-champions on a tie', () => {
+  const state = withPlayers(['Sam', 'Adam', 'Jo']);
+  // Sam wins Mini Golf, Adam wins Aces, Jo wins Duffleboard: 1-1-1.
+  const { state: after, gameId } = playGame(state, { Sam: 27, Adam: 36, Jo: 45 }, DAY(1), {
+    cell: (name, ci) => {
+      if (ci === 1) return { Sam: 3, Adam: 2, Jo: 4 }[name];
+      if (ci === 2) return { Sam: 3, Adam: 3, Jo: 2 }[name];
+      return undefined;
+    },
+  });
+  const stats = Golf.gameStats(after, gameId);
+  assert.strictEqual(stats.champions.length, 3);
+  assert.deepStrictEqual(plain(stats.wins), Object.fromEntries(
+    Golf.getGame(after, gameId).playerIds.map((id) => [id, 1]),
+  ));
+});
+
+test('head-to-head counts course wins over each other player with a complete round', () => {
+  const state = withPlayers(['Sam', 'Adam']);
+  const first = playGame(state, { Sam: 27, Adam: 36 }, DAY(1)); // Sam wins all three
+  const second = playGame(first.state, { Sam: 27, Adam: 36 }, DAY(2), {
+    cell: (name, ci) => (ci === 1 ? { Sam: 3, Adam: 2 }[name] : undefined), // Adam wins Aces
+  });
+  const stats = Golf.gameStats(second.state, second.gameId);
+  const [sam, adam] = Golf.getGame(second.state, second.gameId).playerIds;
+  assert.deepStrictEqual(plain(stats.headToHead), [{ a: sam, b: adam, aWins: 5, bWins: 1 }]);
+  assert.deepStrictEqual(plain(stats.champions), [sam]);
+  assert.deepStrictEqual(plain(stats.wins), { [sam]: 2, [adam]: 1 });
+});
+
+test('playoff strokes never change totals, records, highlights or percentiles', () => {
+  const state = withPlayers(['Sam', 'Adam']);
+  const nameById = Object.fromEntries(state.players.map((p) => [p.id, p.name]));
+  let s = Golf.newGame(state, seeded(12), DAY(1));
+  const gameId = s.currentGameId;
+  for (let cur = Golf.cursor(gameOf(s)); cur; cur = Golf.cursor(gameOf(s))) {
+    const name = nameById[cur.playerId];
+    let value;
+    if (cur.playoff) value = name === 'Sam' ? 1 : 2; // Sam wins playoff P1 with 1s
+    else value = cur.courseIndex === 0 ? 3 : COURSE_VALUE[name]; // 27-27 on Mini Golf
+    s = Golf.recordScore(s, gameId, value, DAY(1));
+  }
+  const mini = Golf.gameStats(s, gameId).courses[0];
+  assert.strictEqual(mini.decidedBy, 'playoff');
+  assert.strictEqual(mini.decidedOn, 1);
+  assert.strictEqual(mini.standings.map((r) => r.total).join(','), '27,27');
+  assert.strictEqual(mini.standings[0].holesInOne, 0);
+  assert.deepStrictEqual(plain(mini.hardestHole), { hole: 1, avg: 3 });
+});
+
+test('playerHistory: rounds, best, average to one decimal, and the last five totals', () => {
+  const { state, ids } = sevenGames();
+  const sam = Golf.getGame(state, ids[0]).playerIds[0];
+  const s = Golf.newGame(state, seeded(4), DAY(8)); // active, so it is not history yet
+  assert.deepStrictEqual(plain(Golf.playerHistory(s, sam)[0]), {
+    courseId: 'redmond-mini',
+    name: 'Mini Golf',
+    rounds: 7,
+    best: 24,
+    average: 27.9,
+    last5: [26, 27, 29, 31, 24],
+  });
+  const aces = plain(Golf.playerHistory(s, sam)[1]);
+  assert.strictEqual(aces.rounds, 7);
+  assert.strictEqual(aces.best, 16);
+});
+
+test('listGames is newest first and lists winners only for finished games', () => {
+  const { state, ids } = sevenGames();
+  const s = Golf.newGame(state, seeded(4), DAY(8));
+  const list = plain(Golf.listGames(s));
+  assert.strictEqual(list[0].status, 'active');
+  assert.deepStrictEqual(list.slice(1).map((g) => g.id), [...ids].reverse());
+  assert.strictEqual(list[1].winners.length, 3);
+  assert.strictEqual(list[0].winners.length, 0);
+});
+
+test('latestFinishedGameId follows finishedAt', () => {
+  const { state, ids } = sevenGames();
+  assert.strictEqual(Golf.latestFinishedGameId(state), ids[6]);
+  assert.strictEqual(Golf.latestFinishedGameId(Golf.emptyState()), null);
+});
