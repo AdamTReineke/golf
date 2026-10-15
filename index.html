@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>Golf Scorecard</title>
+<title>Mini Golf Scorecard</title>
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f7f5">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#101412">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9B%B3%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #f5f7f5; --card: #ffffff; --fg: #14201a; --muted: #5a6a61; --line: #d6ded9;
@@ -233,6 +236,44 @@
   .prow .sub-line { color: var(--muted); font-size: 14px; }
   .spark { width: 72px; height: 24px; flex: none; color: var(--accent); overflow: visible; }
   .card h2 .dot { display: inline-block; vertical-align: middle; margin-right: 6px; }
+
+  /* ---- copy, export, import, platform notes (spec 9, 11) ---- */
+  a.btn { text-decoration: none; }
+  .last-export { color: var(--muted); font-size: .85rem; margin: 14px 0 0; }
+  .ios-hint {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--soft); border-radius: 12px; padding: 4px 6px 4px 12px; margin: 8px 0; font-size: 15px;
+  }
+  .ios-hint span { min-width: 0; }
+  .notice { background: var(--card); border: 2px solid var(--error); border-radius: 14px; padding: 12px 14px; margin: 12px 0; }
+  .notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
+  .notice-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .sr-only { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+  .import-text {
+    display: block; width: 100%; min-height: 160px; margin-top: 4px; padding: 10px 12px; resize: vertical;
+    font: 14px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  .import-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 4px; }
+  .choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; font-size: 16px; }
+  .choice input { margin-top: 4px; width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
+  fieldset.mode { border: 0; padding: 0; margin: 12px 0 4px; min-width: 0; }
+  fieldset.mode legend { color: var(--muted); font-size: .9rem; padding: 0; margin-bottom: 2px; }
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, .55);
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .modal {
+    background: var(--card); color: var(--fg); border-radius: 16px; padding: 16px; width: 100%;
+    max-width: 480px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .modal h2 { margin: 0; }
+  .modal p { margin: 0; }
+  .copy-box {
+    width: 100%; height: 42vh; padding: 10px; resize: none; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    font: 14px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
 </style>
 </head>
 <body>
@@ -255,6 +296,7 @@
  */
 const Golf = (() => {
   const SCHEMA_VERSION = 1;
+  const APP_ID = 'golf-scorecard'; // the "app" field of an export envelope (spec 9.2)
   const MIN_ROSTER = 1;
   const MAX_ROSTER = 6;
 
@@ -1332,8 +1374,236 @@ const Golf = (() => {
     return best ? best.id : null;
   }
 
+  // ---- copy scores, export and import (spec 9, step 6) -----------------------
+
+  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DAY_MS = 86400000;
+
+  // "Tue Oct 14 2026" from the local calendar, built from its parts (no locale formatting).
+  function dayLabel(iso) {
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return '';
+    const d = new Date(ms);
+    return `${DAY_NAMES[d.getDay()]} ${MONTH_NAMES[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`;
+  }
+
+  // Whole days from iso to now (never negative), or null if either is not a date.
+  function daysSince(iso, now) {
+    const then = Date.parse(iso);
+    const at = Date.parse(now);
+    if (Number.isNaN(then) || Number.isNaN(at)) return null;
+    return Math.max(0, Math.floor((at - then) / DAY_MS));
+  }
+
+  // Spec 9.1: the game as plain text, for a text message. Works on an active game too:
+  // unentered cells print as '-', an incomplete total gets '*', and a course with no
+  // entries is left out. Only decided courses (no skip still open) crown a winner.
+  function scoresText(state, gameId) {
+    const game = getGame(state, gameId);
+    if (!game) throw new Error('That game is not in the history.');
+    const venue = getVenue(game.venueId) || defaultVenue();
+    const nameOf = (id) => (getPlayer(state, id) || { name: '?' }).name;
+    const stats = gameStats(state, gameId);
+    const nameWidth = Math.max(...game.playerIds.map((id) => nameOf(id).length));
+    const indent = ' '.repeat(nameWidth + 2);
+    const decided = game.courses.map((_, ci) => {
+      const r = courseResult(game, ci);
+      return r.winnerId && !r.provisional ? r.winnerId : null;
+    });
+
+    const blocks = [];
+    game.courses.forEach((entry, ci) => {
+      const course = getCourse(entry.courseId);
+      if (!stats.courses[ci].played) return;
+      const totals = game.playerIds.map((pid) => courseTotal(game, ci, pid));
+      const totalText = totals.map((t) => `${t.total}${t.complete ? '' : '*'}`);
+      const totalWidth = Math.max(3, ...totalText.map((s) => s.length));
+      const parTotal = course.par ? course.par.reduce((a, b) => a + b, 0) : null;
+      const heading = `${course.name}${parTotal === null ? '' : ` (par ${parTotal})`}`;
+      const holeLabels = Array.from({ length: course.holes }, (_, h) => String(h + 1));
+      const lines = [heading, `${indent}${holeLabels.join(' ')}  ${'Tot'.padStart(totalWidth)}`];
+      game.playerIds.forEach((pid, i) => {
+        const cells = entry.scores[pid].map((v) => (v === null ? '-' : String(v)));
+        const crown = decided[ci] === pid ? '  👑' : '';
+        lines.push(`${nameOf(pid).padEnd(nameWidth)}  ${cells.join(' ')}  ${totalText[i].padStart(totalWidth)}${crown}`);
+      });
+      getPlayoffLines(game, ci, nameOf).forEach((text) => lines.push(`${indent}Playoff: ${text}`));
+      blocks.push(lines.join('\n'));
+    });
+
+    const head = `⛳ ${venue.name}${dayLabel(game.startedAt) ? ` · ${dayLabel(game.startedAt)}` : ''}`;
+    const out = [head, ''];
+    out.push(blocks.length ? blocks.join('\n\n') : 'No scores yet.');
+
+    const wins = new Map();
+    decided.forEach((pid) => { if (pid) wins.set(pid, (wins.get(pid) || 0) + 1); });
+    const ranked = game.playerIds
+      .filter((pid) => wins.has(pid))
+      .sort((a, b) => wins.get(b) - wins.get(a));
+    if (ranked.length) {
+      out.push('', `Course wins: ${ranked.map((pid) => `${nameOf(pid)} ${wins.get(pid)}`).join(', ')}`);
+    }
+    game.courses.forEach((entry, ci) => {
+      const course = getCourse(entry.courseId);
+      stats.courses[ci].standings.forEach((row) => {
+        if (row.record && row.record.kind === 'new') {
+          out.push(`🎉 ${nameOf(row.playerId)}: new ${course.name} record (${row.total})`);
+        }
+      });
+    });
+    return out.join('\n');
+  }
+
+  // One text per playoff hole that has entries, e.g. "Adam 2, Sam 3 (P1)", joined by "; ".
+  function getPlayoffLines(game, ci, nameOf) {
+    const ps = playoffState(game, ci);
+    const parts = ps.rounds.map((round) => {
+      const entries = round.order
+        .map((pid) => [pid, cellValue(game, {
+          courseIndex: ci, hole: round.hole, playerId: pid, playoff: true, pIndex: round.pIndex,
+        })])
+        .filter(([, v]) => v !== null);
+      if (!entries.length) return null;
+      return `${entries.map(([pid, v]) => `${nameOf(pid)} ${v}`).join(', ')} (P${round.pIndex + 1})`;
+    }).filter(Boolean);
+    return parts.length ? [parts.join('; ')] : [];
+  }
+
+  // Spec 9.2: the envelope written by Export all data. Does not change state.
+  function exportEnvelope(state, now) {
+    return {
+      app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: now, data: clone(state),
+    };
+  }
+
+  // Records that a copy or download happened, so Home can show "Last export".
+  function markExported(state, now) {
+    const next = clone(state);
+    next.lastExportAt = now;
+    return next;
+  }
+
+  const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+  const newerMessage = (v) => `This file is from a newer version of Golf Scorecard (schemaVersion ${v}). Update the app before importing it.`;
+
+  // A light structural check after migration, so a bad file is refused before it is merged.
+  function shapeProblem(state) {
+    if (!state.players.every((p) => isPlainObject(p) && typeof p.id === 'string' && typeof p.name === 'string')) {
+      return 'A player in the file is missing its id or name.';
+    }
+    const gamesOk = state.games.every((g) => isPlainObject(g) && typeof g.id === 'string'
+      && ['active', 'finished', 'abandoned'].includes(g.status)
+      && Array.isArray(g.playerIds) && Array.isArray(g.courses)
+      && Array.isArray(g.undo) && Array.isArray(g.redo)
+      && g.courses.every((c) => isPlainObject(c) && isPlainObject(c.scores)));
+    return gamesOk ? null : 'A game in the file is malformed.';
+  }
+
+  // Reads an export envelope, or a bare state object. Never throws; returns
+  // {ok:false, error, summary:null} or {ok:true, error:null, state, exportedAt, summary}.
+  function parseImport(text) {
+    const fail = (error) => ({
+      ok: false, error, state: null, exportedAt: null, summary: null,
+    });
+    if (typeof text !== 'string' || text.trim() === '') return fail('Paste the JSON from an export, or choose a file.');
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      return fail('That is not valid JSON. Copy the whole export, from the first { to the last }.');
+    }
+    if (!isPlainObject(parsed)) return fail('That does not look like Golf Scorecard data.');
+    let data = parsed;
+    let exportedAt = null;
+    if (Object.prototype.hasOwnProperty.call(parsed, 'app')) {
+      if (parsed.app !== APP_ID) return fail('This file is not a Golf Scorecard export.');
+      if (Number.isInteger(parsed.schemaVersion) && parsed.schemaVersion > SCHEMA_VERSION) {
+        return fail(newerMessage(parsed.schemaVersion));
+      }
+      if (!isPlainObject(parsed.data)) return fail('The export has no data in it.');
+      data = parsed.data;
+      exportedAt = typeof parsed.exportedAt === 'string' ? parsed.exportedAt : null;
+    }
+    if (Number.isInteger(data.schemaVersion) && data.schemaVersion > SCHEMA_VERSION) {
+      return fail(newerMessage(data.schemaVersion));
+    }
+    if (!Array.isArray(data.players) || !Array.isArray(data.games)) {
+      return fail('The data has no players or games list.');
+    }
+    let state;
+    try {
+      state = migrate(data);
+    } catch (e) {
+      return fail(`The data could not be read: ${e.message}`);
+    }
+    const problem = shapeProblem(state);
+    if (problem) return fail(problem);
+    return {
+      ok: true,
+      error: null,
+      state,
+      exportedAt,
+      summary: { players: state.players.length, games: state.games.length },
+    };
+  }
+
+  // Of two copies of one game id: a finished copy beats an active one, and between two
+  // finished copies the later finishedAt wins. Otherwise the current copy is kept.
+  function pickGame(current, incoming) {
+    const currentDone = current.status === 'finished';
+    const incomingDone = incoming.status === 'finished';
+    if (incomingDone && !currentDone) return incoming;
+    if (currentDone && incomingDone && timeOf(incoming.finishedAt) > timeOf(current.finishedAt)) return incoming;
+    return current;
+  }
+
+  // Union of two states (spec 9.3). Players and games are matched by id. A player id
+  // keeps the current copy. The roster stays the current one. The newest active game
+  // (by startedAt) is the only active game; any other active game is abandoned, and it
+  // becomes currentGameId so Resume can reach it.
+  function mergeStates(current, incoming) {
+    const cur = clone(current);
+    const inc = clone(incoming);
+    const players = cur.players.slice();
+    const havePlayer = new Set(players.map((p) => p.id));
+    inc.players.forEach((p) => {
+      if (!havePlayer.has(p.id)) { havePlayer.add(p.id); players.push(p); }
+    });
+    const games = cur.games.slice();
+    const at = new Map(games.map((g, i) => [g.id, i]));
+    inc.games.forEach((g) => {
+      if (!at.has(g.id)) { at.set(g.id, games.length); games.push(g); return; }
+      const i = at.get(g.id);
+      games[i] = pickGame(games[i], g);
+    });
+    const actives = games.filter((g) => g.status === 'active');
+    let currentGameId = cur.currentGameId;
+    if (actives.length) {
+      const keep = actives.reduce((best, g) => {
+        const a = timeOf(g.startedAt);
+        const b = timeOf(best.startedAt);
+        if (a > b || (a === b && g.id === cur.currentGameId)) return g;
+        return best;
+      });
+      games.forEach((g) => { if (g.status === 'active' && g.id !== keep.id) g.status = 'abandoned'; });
+      currentGameId = keep.id;
+    }
+    const stamps = [cur.lastExportAt, inc.lastExportAt].filter((x) => typeof x === 'string');
+    const lastExportAt = stamps.length ? stamps.reduce((a, b) => (timeOf(b) > timeOf(a) ? b : a)) : null;
+    return normalize({
+      schemaVersion: SCHEMA_VERSION,
+      players,
+      lastRoster: cur.lastRoster,
+      currentGameId,
+      lastExportAt,
+      games,
+    });
+  }
+
   return {
-    SCHEMA_VERSION, MIN_ROSTER, MAX_ROSTER, VENUES, PALETTE,
+    SCHEMA_VERSION, APP_ID, MIN_ROSTER, MAX_ROSTER, VENUES, PALETTE,
     gameStats, playerHistory, listGames, latestFinishedGameId, percentileOf, recordFor, MIN_POOL,
     emptyState, migrate, makeId, shuffle,
     getVenue, getCourse,
@@ -1347,6 +1617,7 @@ const Golf = (() => {
     priorHoleInfo, courseResult, courseFilled,
     playoffState, playoffWinnerId, gamePhase, regulationSkips, replayQueued, cellValue,
     startReplay, finishAnyway, endEarly, reopenGame, finishGame,
+    dayLabel, daysSince, scoresText, exportEnvelope, markExported, parseImport, mergeStates,
   };
 })();
 </script>
@@ -1361,8 +1632,10 @@ const Golf = (() => {
   const POINTER_WINDOW_MS = 500; // a click this soon after a pointer press is the same tap
   const FLASH_MS = 1300;         // how long a tap's confirmation stays in the now-up bar
 
+  const IOS_HINT_KEY = 'golfScorecard.iosHintDismissed';
+
   let state = Golf.emptyState();
-  let screen = 'home';          // 'setup' | 'home' | 'scoring' | 'stats' | 'history' | 'abandoned'
+  let screen = 'home';          // 'setup' | 'home' | 'scoring' | 'stats' | 'history' | 'abandoned' | 'export' | 'import'
   let viewGameId = null;        // the game the stats or abandoned screen shows (null = current)
   let backScreen = 'home';      // where the back link on the stats screen goes
   let historyTab = 'games';     // 'games' | 'players'
@@ -1380,6 +1653,12 @@ const Golf = (() => {
   let lastPointerAt = 0;
   let wakeLock = null;
   let wakeLockPending = false;
+  let importText = '';          // the import textarea, kept across renders
+  let importPreview = null;     // Golf.parseImport result for the text, set by Preview
+  let importMode = 'merge';     // 'merge' | 'replace'
+  let corruptDismissed = null;  // a corrupt-data backup key the user dismissed this visit
+  let renderedScreen = null;    // screen of the last render; confetti is removed when it changes
+  let iosHintHidden = false;    // dismissed this visit (storage may refuse to remember it)
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (value) => String(value).replace(/[&<>"']/g, (c) => (
@@ -1417,6 +1696,214 @@ const Golf = (() => {
     const onBlack = (L + 0.05) / 0.05;
     return onWhite >= onBlack ? '#ffffff' : '#101412';
   };
+
+  // ---- clipboard (spec 9.4) --------------------------------------------------
+
+  // Copies through a hidden textarea. Works where the async clipboard API is missing or refused.
+  function legacyCopy(text) {
+    const box = document.createElement('textarea');
+    box.value = text;
+    box.setAttribute('readonly', '');
+    box.style.position = 'fixed';
+    box.style.top = '0';
+    box.style.left = '0';
+    box.style.opacity = '0';
+    box.style.fontSize = '16px';
+    document.body.appendChild(box);
+    box.focus();
+    box.select();
+    box.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (e) {
+      ok = false;
+    }
+    box.remove();
+    return ok;
+  }
+
+  // Last resort: the text in a selectable box, for the user to copy by hand.
+  function showCopyModal(text) {
+    document.querySelector('#copy-modal')?.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'copy-modal';
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="copy-title">
+        <h2 id="copy-title">Copy this text</h2>
+        <p class="hint">This browser would not copy it for you. Tap the text, select all, and copy.</p>
+        <textarea class="copy-box" readonly aria-label="Text to copy"></textarea>
+        <button class="btn big primary" data-action="close-copy">Close</button>
+      </div>`;
+    const box = wrap.querySelector('textarea');
+    box.value = text;
+    document.body.appendChild(wrap);
+    box.focus();
+    box.select();
+  }
+
+  // Resolves to 'copied' (the toast says so) or 'modal' (the text is on screen to copy).
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast('Copied ✓');
+        return 'copied';
+      }
+    } catch (e) {
+      // Refused here (for example on an insecure page). The older method is tried next.
+    }
+    if (legacyCopy(text)) {
+      toast('Copied ✓');
+      return 'copied';
+    }
+    showCopyModal(text);
+    return 'modal';
+  }
+
+  // ---- export and import helpers (spec 9.2, 9.3) ------------------------------
+
+  const exportJson = (now) => JSON.stringify(Golf.exportEnvelope(state, now), null, 2);
+
+  // golf-scorecard-YYYY-MM-DD.json, dated in the local calendar.
+  function exportFilename(iso) {
+    const d = new Date(iso);
+    const two = (n) => String(n).padStart(2, '0');
+    return `golf-scorecard-${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}.json`;
+  }
+
+  function lastExportLine() {
+    const days = Golf.daysSince(state.lastExportAt, nowISO());
+    if (days === null) return 'Never exported';
+    if (days === 0) return 'Last export: today';
+    if (days === 1) return 'Last export: 1 day ago';
+    return `Last export: ${days} days ago`;
+  }
+
+  function downloadJson() {
+    const now = nowISO();
+    const url = URL.createObjectURL(new Blob([exportJson(now)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = exportFilename(now);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    commit(Golf.markExported(state, now));
+    toast('Downloaded ✓');
+  }
+
+  async function copyJson() {
+    const now = nowISO();
+    if (await copyText(exportJson(now)) === 'copied') commit(Golf.markExported(state, now));
+  }
+
+  // The mailto link navigates by itself, so this only records the export without a re-render.
+  function markExportedQuietly() {
+    state = Golf.markExported(state, nowISO());
+    writeState(state);
+  }
+
+  // The corrupt-data backup to offer, if the user has not dismissed it (spec 12).
+  function corruptBackupKey() {
+    let best = null;
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(CORRUPT_PREFIX)) {
+          const ts = Number(key.slice(CORRUPT_PREFIX.length));
+          if (!best || ts > best.ts) best = { key, ts };
+        }
+      }
+    } catch (e) {
+      return null;
+    }
+    return best && best.key !== corruptDismissed ? best.key : null;
+  }
+
+  function copyCorrupt(key) {
+    let raw = null;
+    try {
+      raw = localStorage.getItem(key);
+    } catch (e) {
+      raw = null;
+    }
+    if (raw === null) {
+      toast('That backup is no longer there.');
+      return;
+    }
+    copyText(raw);
+  }
+
+  // Shown on iOS Safari outside the Home Screen app, until dismissed (spec 11).
+  function iosHintWanted() {
+    if (iosHintHidden) return false;
+    const ua = navigator.userAgent || '';
+    const ios = /iPhone|iPad|iPod/.test(ua)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+    const standalone = navigator.standalone === true
+      || (!!window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    if (!ios || !safari || standalone) return false;
+    try {
+      return localStorage.getItem(IOS_HINT_KEY) !== '1';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function dismissIosHint() {
+    iosHintHidden = true;
+    try {
+      localStorage.setItem(IOS_HINT_KEY, '1');
+    } catch (e) {
+      // Not remembered after this visit, which is acceptable.
+    }
+    render();
+  }
+
+  async function applyImport() {
+    const preview = importPreview;
+    if (!preview || !preview.ok) return;
+    if (readOnly) {
+      toast('Saved data is protected, so import is unavailable.');
+      return;
+    }
+    const incoming = preview.state;
+    const { summary } = preview;
+    let next;
+    try {
+      if (importMode === 'replace') {
+        if (!confirm('Replace all data on this device with the file? Your current data is copied to the clipboard first.')) return;
+        const now = nowISO();
+        await copyText(exportJson(now));
+        next = Golf.markExported(incoming, now);
+      } else {
+        next = Golf.mergeStates(state, incoming);
+      }
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    importText = '';
+    importPreview = null;
+    importMode = 'merge';
+    commit(next, 'home');
+    toast(`Imported ${plural(summary.players, 'player')}, ${plural(summary.games, 'game')}`);
+  }
+
+  function readImportFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      importText = String(reader.result || '');
+      importPreview = null;
+      render();
+    };
+    reader.onerror = () => toast('Could not read that file.');
+    reader.readAsText(file);
+  }
 
   // ---- toast and save banner -------------------------------------------------
 
@@ -1656,15 +2143,31 @@ const Golf = (() => {
       : '';
     return `
       <header class="top"><h1>Golf Scorecard</h1></header>
+      ${corruptNotice()}
+      ${iosHintWanted() ? '<div class="ios-hint" role="note"><span>Tip: Share → Add to Home Screen keeps your scores safe</span><button class="link" data-action="dismiss-ios">Dismiss</button></div>' : ''}
       ${resume}
       <button class="btn ${active ? '' : 'big primary'}" data-action="new">New game</button>
       <button class="playing" data-action="players"><span>${playingLine}</span><span aria-hidden="true">›</span></button>
       <nav class="links">
         <button class="link" data-action="history">History</button>
         <button class="link" data-action="players">Players</button>
-        <button class="link" data-action="soon">Export all data</button>
-        <button class="link" data-action="soon">Import data</button>
-      </nav>`;
+        <button class="link" data-action="export-screen">Export all data</button>
+        <button class="link" data-action="import-screen">Import data</button>
+      </nav>
+      <p class="last-export">${lastExportLine()}</p>`;
+  }
+
+  // Offers the raw text of unreadable saved data, moved aside by recoverCorrupt (spec 12).
+  function corruptNotice() {
+    const key = corruptBackupKey();
+    if (!key) return '';
+    return `<section class="notice" role="status">
+        <p>Saved data could not be read, so it was moved to <code>${esc(key)}</code>. Nothing was deleted.</p>
+        <div class="notice-actions">
+          <button class="btn small" data-action="copy-corrupt" data-backup="${esc(key)}">Copy raw data</button>
+          <button class="link" data-action="dismiss-corrupt">Dismiss</button>
+        </div>
+      </section>`;
   }
 
   function viewSetup() {
@@ -1696,6 +2199,7 @@ const Golf = (() => {
       </li>`;
     }).join('');
     return `
+      ${corruptNotice()}
       <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>Players</h1></header>
       <form class="add" data-form="add">
         <input class="text" name="name" maxlength="24" placeholder="Add a player" autocomplete="off" autocapitalize="words" aria-label="Player name">
@@ -1936,7 +2440,7 @@ const Golf = (() => {
         ${bar}
         ${cards}
         <div id="dock" class="dock">
-          ${menuOpen ? '<div class="menu"><button class="btn small" data-action="end-early">End game early</button><button class="btn small" data-action="home">Home</button></div>' : ''}
+          ${menuOpen ? '<div class="menu"><button class="btn small" data-action="copy-scores">Copy scores</button><button class="btn small" data-action="end-early">End game early</button><button class="btn small" data-action="home">Home</button></div>' : ''}
           ${pad}
           <div class="tools">
             <button class="tool" data-action="undo" ${Golf.canUndo(state, game.id) ? '' : 'disabled'}>↶ Undo</button>
@@ -2084,7 +2588,7 @@ const Golf = (() => {
       ${note}
       ${stats.courses.map((c) => courseStatsCard(game, c)).join('')}
       <div class="actions">
-        <button class="btn big" disabled>Copy scores<span class="sub">Coming in a later step</span></button>
+        <button class="btn big" data-action="copy-scores">Copy scores</button>
         ${latest ? '<button class="btn big" data-action="reopen">Reopen game</button>' : ''}
         <button class="btn big primary" data-action="home">Home</button>
       </div>`;
@@ -2166,9 +2670,74 @@ const Golf = (() => {
       ${historyTab === 'games' ? gamesList() : playersList()}`;
   }
 
+  // Export all data (spec 9.2): copy is the main path; download and mailto are the others.
+  function viewExport() {
+    const now = nowISO();
+    const json = exportJson(now);
+    const kb = Math.max(1, Math.round(json.length / 1024));
+    const subject = encodeURIComponent(`Golf Scorecard backup, ${exportFilename(now)}`);
+    const mail = `mailto:?subject=${subject}&body=${encodeURIComponent(json)}`;
+    return `
+      <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>Export</h1></header>
+      <p>Your scores live only on this device. Keep a copy somewhere safe, so you can move them or restore them later.</p>
+      <p class="hint">${plural(state.players.length, 'player')}, ${plural(state.games.length, 'game')} · about ${kb} KB</p>
+      <div class="actions">
+        <button class="btn big primary" data-action="copy-json">Copy JSON<span class="sub">Recommended. Paste it into a note or a message.</span></button>
+        <button class="btn big" data-action="download-json">Download .json<span class="sub">${esc(exportFilename(now))}</span></button>
+        <a class="btn big" href="${esc(mail)}" data-action="email-json">Email it<span class="sub">Long emails can be cut short, so copy is safer.</span></a>
+      </div>
+      <p class="last-export">${lastExportLine()}</p>`;
+  }
+
+  // Import (spec 9.3): paste or pick a file, preview it, then merge or replace.
+  function viewImport() {
+    const result = importPreview;
+    let resultHtml = '';
+    if (result && !result.ok) {
+      resultHtml = `<p class="error" role="alert">${esc(result.error)}</p>`;
+    } else if (result && result.ok) {
+      const when = result.exportedAt && Golf.dayLabel(result.exportedAt)
+        ? `<p class="hint">Exported ${esc(Golf.dayLabel(result.exportedAt))}</p>` : '';
+      const replace = importMode === 'replace';
+      resultHtml = `<section class="card" id="import-result">
+          <h2>Preview</h2>
+          <p class="champ">${plural(result.summary.players, 'player')}, ${plural(result.summary.games, 'game')}</p>
+          ${when}
+          <fieldset class="mode">
+            <legend>When importing</legend>
+            <label class="choice"><input type="radio" name="import-mode" value="merge" ${replace ? '' : 'checked'}><span>Merge. Adds what this device does not have. Nothing is removed.</span></label>
+            <label class="choice"><input type="radio" name="import-mode" value="replace" ${replace ? 'checked' : ''}><span>Replace. This device's data is swapped for the file's.</span></label>
+          </fieldset>
+          ${replace ? '<p class="hint">Your current data is copied to the clipboard first.</p>' : ''}
+          <button class="btn big primary" data-action="import-apply">${replace ? 'Replace my data' : 'Merge into this device'}</button>
+        </section>`;
+    }
+    return `
+      <header class="top"><button class="link" data-action="home">&larr; Home</button><h1>Import</h1></header>
+      <p>Paste an export, or choose its .json file. Nothing changes until you import it.</p>
+      <label class="section-label" for="import-text">Export JSON</label>
+      <textarea id="import-text" class="import-text" rows="8" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Paste the exported JSON here">${esc(importText)}</textarea>
+      <div class="import-actions">
+        <label class="btn small" for="import-file">Choose a .json file</label>
+        <input id="import-file" class="sr-only" type="file" accept=".json,application/json">
+        <button class="btn small primary" data-action="import-preview">Preview</button>
+      </div>
+      ${resultHtml}`;
+  }
+
   const VIEWS = {
     setup: viewSetup, home: viewHome, scoring: viewScoring, stats: viewStats, history: viewHistory, abandoned: viewAbandoned,
+    export: viewExport, import: viewImport,
   };
+
+  // Copies the scores of the game on screen, or the current game (spec 9.1).
+  function copyScores() {
+    const game = Golf.getGame(state, viewGameId || state.currentGameId);
+    if (!game) return;
+    menuOpen = false;
+    render();
+    copyText(Golf.scoresText(state, game.id));
+  }
 
   // The numpad sits over the page, so the page gets padding equal to its height.
   // The sticky names row of each card sits just under the now-up bar, so --bar-h is the
@@ -2215,6 +2784,11 @@ const Golf = (() => {
     document.body.classList.toggle('scoring', screen === 'scoring');
     // The sticky bar height only means something while scoring.
     if (screen !== 'scoring') document.documentElement.style.removeProperty('--bar-h');
+    // Confetti belongs to the stats screen. Leaving it must not leave pieces on the next screen.
+    if (screen !== renderedScreen) {
+      renderedScreen = screen;
+      document.querySelectorAll('.confetti-layer').forEach((el) => el.remove());
+    }
     app.innerHTML = VIEWS[screen]();
     if (screen === 'setup' && editingId) {
       const input = app.querySelector('.rename input');
@@ -2535,8 +3109,19 @@ const Golf = (() => {
       case 'edit': editingId = id; setupError = ''; render(); break;
       case 'cancel-edit': editingId = null; render(); break;
       case 'remove': removePlayer(id); break;
-      case 'export': toast('Export is not built yet.'); break;
-      case 'soon': toast('Coming in a later step.'); break;
+      case 'export': // the save-failure banner
+      case 'export-screen': go('export'); break;
+      case 'import-screen': go('import'); break;
+      case 'copy-json': copyJson(); break;
+      case 'download-json': downloadJson(); break;
+      case 'email-json': markExportedQuietly(); break;
+      case 'import-preview': importPreview = Golf.parseImport(importText); render(); break;
+      case 'import-apply': applyImport(); break;
+      case 'copy-scores': copyScores(); break;
+      case 'copy-corrupt': copyCorrupt(el.dataset.backup); break;
+      case 'dismiss-corrupt': corruptDismissed = corruptBackupKey(); render(); break;
+      case 'dismiss-ios': dismissIosHint(); break;
+      case 'close-copy': document.querySelector('#copy-modal')?.remove(); break;
       default: break; // 'toggle' is handled by the change listener
     }
   });
@@ -2544,6 +3129,21 @@ const Golf = (() => {
   document.addEventListener('change', (event) => {
     const el = event.target;
     if (el.matches('[data-action="toggle"]')) toggleRoster(el.dataset.id, el.checked);
+    else if (el.id === 'import-file') readImportFile(el.files && el.files[0]);
+    else if (el.name === 'import-mode') {
+      importMode = el.value === 'replace' ? 'replace' : 'merge';
+      render();
+    }
+  });
+
+  // Typing in the import box changes what a Preview would read, so an old preview goes away.
+  document.addEventListener('input', (event) => {
+    if (event.target.id !== 'import-text') return;
+    importText = event.target.value;
+    if (importPreview) {
+      importPreview = null;
+      document.querySelector('#import-result')?.remove();
+    }
   });
 
   document.addEventListener('submit', (event) => {
@@ -2557,6 +3157,7 @@ const Golf = (() => {
   // Desktop testing: digits 1-8 and S.
   document.addEventListener('keydown', (event) => {
     if (screen !== 'scoring' || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (document.querySelector('#copy-modal')) return;
     if (event.target.closest?.('input, textarea, select')) return;
     const key = event.key.toLowerCase();
     if (key === 's') {
@@ -2582,6 +3183,13 @@ const Golf = (() => {
   });
 
   // ---- init ------------------------------------------------------------------
+
+  // Ask the browser to keep this site's storage (spec 11). The answer is not needed.
+  try {
+    Promise.resolve(navigator.storage?.persist?.()).catch(() => {});
+  } catch (e) {
+    // Not supported here.
+  }
 
   state = loadState();
   const current = Golf.getGame(state, state.currentGameId);

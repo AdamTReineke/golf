@@ -1273,3 +1273,239 @@ test('latestFinishedGameId follows finishedAt', () => {
   assert.strictEqual(Golf.latestFinishedGameId(state), ids[6]);
   assert.strictEqual(Golf.latestFinishedGameId(Golf.emptyState()), null);
 });
+
+// ---- copy scores, export and import (step 6) -------------------------------
+
+// A local-time ISO string, so the calendar day does not depend on the machine's zone.
+const localIso = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi).toISOString();
+
+test('dayLabel formats the local calendar day without a locale; bad input is empty', () => {
+  assert.strictEqual(Golf.dayLabel(localIso(2026, 10, 14, 19, 14)), 'Wed Oct 14 2026');
+  assert.strictEqual(Golf.dayLabel(localIso(2026, 1, 1, 9, 0)), 'Thu Jan 1 2026');
+  assert.strictEqual(Golf.dayLabel('not a date'), '');
+  assert.strictEqual(Golf.dayLabel(null), '');
+});
+
+test('daysSince counts whole days, never negative, and null for bad dates', () => {
+  assert.strictEqual(Golf.daysSince('2026-10-10T00:00:00.000Z', '2026-10-14T01:00:00.000Z'), 4);
+  assert.strictEqual(Golf.daysSince('2026-10-14T12:00:00.000Z', '2026-10-14T01:00:00.000Z'), 0);
+  assert.strictEqual(Golf.daysSince(null, NOW), null);
+  assert.strictEqual(Golf.daysSince(NOW, 'soon'), null);
+});
+
+test('scoresText: a full game in the spec 9.1 layout, with crown, playoff, and wins lines', () => {
+  // Mini Golf ends 27-27 and Adam wins the playoff on P1 (Adam 2, Sam 3). Sam takes Aces and Duffleboard.
+  const { state: start, id, gameId } = setup(['Sam', 'Adam'], {
+    Sam: [4, 3, 3, 3, 3, 3, 3, 3, 2],
+    Adam: fill(3),
+  });
+  const adam = id('Adam');
+  const state = enterWhile(start, gameId, (cur) => {
+    if (cur.playoff) return cur.playerId === adam ? 2 : 3;
+    return cur.playerId === adam ? 3 : 2;
+  });
+  gameOf(state).startedAt = localIso(2026, 10, 14, 19, 14);
+  assert.strictEqual(Golf.scoresText(state, gameId), [
+    '⛳ Redmond · Wed Oct 14 2026',
+    '',
+    'Mini Golf (par 27)',
+    '      1 2 3 4 5 6 7 8 9  Tot',
+    'Sam   4 3 3 3 3 3 3 3 2   27',
+    'Adam  3 3 3 3 3 3 3 3 3   27  👑',
+    '      Playoff: Adam 2, Sam 3 (P1)',
+    '',
+    'Aces',
+    '      1 2 3 4 5 6 7 8  Tot',
+    'Sam   2 2 2 2 2 2 2 2   16  👑',
+    'Adam  3 3 3 3 3 3 3 3   24',
+    '',
+    'Duffleboard',
+    '      1 2 3 4 5 6 7 8 9  Tot',
+    'Sam   2 2 2 2 2 2 2 2 2   18  👑',
+    'Adam  3 3 3 3 3 3 3 3 3   27',
+    '',
+    'Course wins: Sam 2, Adam 1',
+  ].join('\n'));
+});
+
+test('scoresText: an in-progress game pads names, prints S and blanks, marks incomplete totals', () => {
+  const { state, gameId } = setup(['Sam', 'Jo'], { Sam: [3, 'S', 4], Jo: [3, 3] });
+  gameOf(state).startedAt = localIso(2026, 10, 14, 19, 14);
+  assert.strictEqual(Golf.scoresText(state, gameId), [
+    '⛳ Redmond · Wed Oct 14 2026',
+    '',
+    'Mini Golf (par 27)',
+    '     1 2 3 4 5 6 7 8 9  Tot',
+    'Sam  3 S 4 - - - - - -   7*',
+    'Jo   3 3 - - - - - - -   6*',
+  ].join('\n'));
+});
+
+test('scoresText: an open skip withholds the crown and the wins line until it is resolved', () => {
+  const { state, gameId } = setup(['Sam', 'Adam'], { Sam: fill(3), Adam: [...fill(4, 8), 'S'] });
+  const text = Golf.scoresText(state, gameId);
+  // Sam leads, but Adam's open skip makes the course provisional: no crown, no win yet.
+  assert.ok(!text.includes('👑'));
+  assert.ok(!text.includes('Course wins'));
+  assert.match(text, /Adam  4 4 4 4 4 4 4 4 S  32\*/);
+});
+
+test('scoresText: a new personal record gets its own line; the in-progress game has none', () => {
+  const { state, ids } = sevenGames();
+  const lines = Golf.scoresText(state, ids[6]).split('\n');
+  assert.strictEqual(lines[lines.length - 1], '🎉 Sam: new Mini Golf record (24)');
+  assert.ok(lines.includes('Course wins: Sam 3'));
+  // A game still being played has no finished rounds, so there is no record to celebrate.
+  const live = Golf.newGame(state, seeded(11), DAY(8));
+  const liveId = live.currentGameId;
+  const partial = Golf.recordScore(live, liveId, 1, DAY(8));
+  assert.ok(!Golf.scoresText(partial, liveId).includes('🎉'));
+});
+
+test('scoresText rejects an unknown game', () => {
+  assert.throws(() => Golf.scoresText(Golf.emptyState(), 'g_missing'), { message: /not in the history/ });
+});
+
+test('exportEnvelope wraps a copy of the state in the spec 9.2 envelope', () => {
+  const state = withPlayers(['Sam', 'Adam']);
+  const env = plain(Golf.exportEnvelope(state, NOW));
+  assert.deepStrictEqual(Object.keys(env), ['app', 'schemaVersion', 'exportedAt', 'data']);
+  assert.strictEqual(env.app, 'golf-scorecard');
+  assert.strictEqual(env.app, Golf.APP_ID);
+  assert.strictEqual(env.schemaVersion, 1);
+  assert.strictEqual(env.exportedAt, NOW);
+  assert.deepStrictEqual(env.data, plain(state));
+  env.data.players[0].name = 'Changed';
+  assert.strictEqual(state.players[0].name, 'Sam', 'the envelope does not share objects with the state');
+});
+
+test('markExported sets lastExportAt on a copy and leaves the input alone', () => {
+  const state = withPlayers(['Sam']);
+  const marked = Golf.markExported(state, LATER);
+  assert.strictEqual(marked.lastExportAt, LATER);
+  assert.strictEqual(state.lastExportAt, null);
+  assert.deepStrictEqual(plain({ ...marked, lastExportAt: null }), plain(state));
+});
+
+test('parseImport accepts an envelope and reports the summary', () => {
+  const { state } = finishedTwo();
+  const result = plain(Golf.parseImport(JSON.stringify(Golf.exportEnvelope(state, NOW))));
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.exportedAt, NOW);
+  assert.deepStrictEqual(result.summary, { players: 2, games: 1 });
+  assert.deepStrictEqual(result.state, plain(state));
+});
+
+test('parseImport accepts a bare state object without an envelope', () => {
+  const state = withPlayers(['Sam', 'Adam', 'Jo']);
+  const result = plain(Golf.parseImport(JSON.stringify(state)));
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.exportedAt, null);
+  assert.deepStrictEqual(result.summary, { players: 3, games: 0 });
+  assert.deepStrictEqual(result.state, plain(state));
+});
+
+test('parseImport explains each kind of bad input and never throws', () => {
+  const env = plain(Golf.exportEnvelope(withPlayers(['Sam']), NOW));
+  const cases = [
+    [undefined, /Paste the JSON/],
+    ['   ', /Paste the JSON/],
+    ['{"app": "golf-scorecard", ', /not valid JSON/],
+    ['[]', /does not look like/],
+    ['"golf"', /does not look like/],
+    [JSON.stringify({ ...env, app: 'budget-app' }), /not a Golf Scorecard export/],
+    [JSON.stringify({ ...env, schemaVersion: 2 }), /newer version.*schemaVersion 2/],
+    [JSON.stringify({ ...env, data: { ...env.data, schemaVersion: 3 } }), /newer version.*schemaVersion 3/],
+    [JSON.stringify({ app: 'golf-scorecard', schemaVersion: 1 }), /no data/],
+    [JSON.stringify({ schemaVersion: 1, players: [] }), /no players or games list/],
+    [JSON.stringify({ schemaVersion: 0, players: [], games: [] }), /could not be read/],
+  ];
+  for (const [text, pattern] of cases) {
+    const result = Golf.parseImport(text);
+    assert.strictEqual(result.ok, false, `refused: ${text}`);
+    assert.match(result.error, pattern);
+    assert.strictEqual(result.summary, null);
+  }
+  const { state } = finishedTwo();
+  const broken = plain(state);
+  delete broken.games[0].undo;
+  assert.match(Golf.parseImport(JSON.stringify(broken)).error, /malformed/);
+});
+
+test('export, parseImport and Replace give back identical data (round trip)', () => {
+  const { state } = finishedTwo();
+  const text = JSON.stringify(Golf.exportEnvelope(state, NOW), null, 2);
+  const imported = Golf.parseImport(text);
+  assert.strictEqual(imported.ok, true);
+  assert.deepStrictEqual(plain(imported.state), plain(state));
+  // Importing the same file again changes nothing.
+  assert.deepStrictEqual(plain(Golf.parseImport(text).state), plain(imported.state));
+});
+
+test('mergeStates unions players by id and keeps the current copy on a collision', () => {
+  const base = withPlayers(['Sam', 'Adam']);
+  const adam = plain(base.players[1]);
+  const incoming = Golf.addPlayer(Golf.emptyState(), 'Jo', seeded(21), NOW);
+  const other = { ...incoming, players: [{ ...adam, name: 'Renamed' }, ...incoming.players] };
+  const merged = plain(Golf.mergeStates(base, other));
+  assert.deepStrictEqual(merged.players.map((p) => p.name), ['Sam', 'Adam', 'Jo']);
+  assert.strictEqual(merged.players[1].name, 'Adam');
+  assert.deepStrictEqual(merged.lastRoster, plain(base.lastRoster), 'the roster stays the current one');
+});
+
+test('mergeStates unions games and resolves a game id by finish state, then finishedAt', () => {
+  const { state: done, gameId } = finishedTwo();
+  const game = plain(Golf.getGame(done, gameId));
+  // Same game, but the incoming copy is still active: the current finished copy stays.
+  const active = plain(done);
+  active.games[0] = { ...game, status: 'active', finishedAt: null };
+  active.currentGameId = gameId;
+  let merged = plain(Golf.mergeStates(done, active));
+  assert.strictEqual(merged.games[0].status, 'finished');
+  // The current copy is active and the incoming copy is finished: the finished one wins.
+  merged = plain(Golf.mergeStates(active, done));
+  assert.strictEqual(merged.games[0].status, 'finished');
+  assert.strictEqual(merged.games[0].finishedAt, LATER);
+  // Both finished: the later finishedAt wins, whichever side it is on.
+  const later = plain(done);
+  later.games[0].finishedAt = LATEST;
+  assert.strictEqual(plain(Golf.mergeStates(done, later)).games[0].finishedAt, LATEST);
+  assert.strictEqual(plain(Golf.mergeStates(later, done)).games[0].finishedAt, LATEST);
+  // Two different games: both kept.
+  const second = plain(Golf.newGame(done, seeded(2), NOW));
+  merged = plain(Golf.mergeStates(done, { ...done, games: second.games }));
+  assert.strictEqual(merged.games.length, 2);
+});
+
+test('mergeStates leaves at most one active game: the newest by startedAt', () => {
+  const roster = withPlayers(['Sam', 'Adam']);
+  const older = plain(Golf.newGame(roster, seeded(31), DAY(1)));
+  const newer = plain(Golf.newGame(roster, seeded(32), DAY(2)));
+  const a = { ...older, games: [older.games[0]], currentGameId: older.games[0].id };
+  const b = { ...newer, games: [newer.games[0]], currentGameId: newer.games[0].id };
+  const merged = plain(Golf.mergeStates(a, b));
+  const active = merged.games.filter((g) => g.status === 'active');
+  assert.strictEqual(active.length, 1);
+  assert.strictEqual(active[0].id, newer.games[0].id);
+  assert.strictEqual(merged.games.find((g) => g.id === older.games[0].id).status, 'abandoned');
+  assert.strictEqual(merged.currentGameId, newer.games[0].id, 'Resume reaches the game that stayed active');
+});
+
+test('mergeStates takes an incoming active game when the current device has no current game', () => {
+  const roster = withPlayers(['Sam', 'Adam']);
+  const incoming = plain(Golf.newGame(roster, seeded(41), DAY(3)));
+  const merged = plain(Golf.mergeStates(roster, incoming));
+  assert.strictEqual(merged.currentGameId, incoming.currentGameId);
+  assert.strictEqual(merged.games.length, 1);
+  assert.strictEqual(merged.games[0].status, 'active');
+});
+
+test('mergeStates keeps the later lastExportAt, and merging a state with itself changes nothing', () => {
+  const { state } = finishedTwo();
+  const earlier = Golf.markExported(state, DAY(1));
+  const later = Golf.markExported(state, DAY(2));
+  assert.strictEqual(plain(Golf.mergeStates(earlier, later)).lastExportAt, DAY(2));
+  assert.strictEqual(plain(Golf.mergeStates(later, earlier)).lastExportAt, DAY(2));
+  assert.deepStrictEqual(plain(Golf.mergeStates(state, state)), plain(state));
+});
