@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Golf Scorecard Spec</title>
+<style>
+  :root {
+    --bg: #fbfbf8; --fg: #1d2420; --muted: #5d6a63; --line: #dde3df;
+    --card: #ffffff; --accent: #1f7a4d; --accent-soft: #e3f2ea;
+    --added: #8a5a00; --added-soft: #fff3d6; --q: #8b2252; --q-soft: #fbe6ef;
+    --code: #f1f4f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121614; --fg: #e4ebe6; --muted: #9aa8a0; --line: #2a332e;
+      --card: #1a201d; --accent: #4cc68a; --accent-soft: #183427;
+      --added: #f0c060; --added-soft: #3a2f12; --q: #f08cb8; --q-soft: #3a1828;
+      --code: #1f2622;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 1.9rem; margin: 0 0 4px; }
+  h2 { font-size: 1.3rem; margin: 44px 0 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 24px 0 6px; }
+  p, li { max-width: 70ch; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .88em; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; line-height: 1.4; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; font-size: .95rem; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  .tag { display: inline-block; font-size: .72rem; font-weight: 600; padding: 1px 7px; border-radius: 999px; vertical-align: 2px; margin-left: 4px; }
+  .tag.added { background: var(--added-soft); color: var(--added); }
+  .tag.q { background: var(--q-soft); color: var(--q); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: .9rem; color: var(--muted); }
+  nav ol { columns: 2; column-gap: 32px; padding-left: 20px; margin: 8px 0; }
+  @media (max-width: 560px) { nav ol { columns: 1; } }
+  nav a { color: var(--accent); text-decoration: none; }
+  .callout { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 6px; margin: 12px 0; }
+  .qbox { background: var(--q-soft); border-left: 4px solid var(--q); padding: 10px 14px; border-radius: 6px; margin: 12px 0; }
+  .qbox li { margin: 6px 0; }
+
+  /* Phone mockup */
+  .mock-wrap { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; margin: 16px 0; }
+  .phone {
+    width: 300px; max-width: 100%; border: 2px solid var(--line); border-radius: 26px; padding: 12px;
+    background: var(--card); font-size: 13px; line-height: 1.3; flex: none;
+  }
+  .ph-bar { background: #2d7ff9; color: #fff; border-radius: 12px; padding: 8px 10px; }
+  .ph-bar .who { font-size: 20px; font-weight: 700; }
+  .ph-bar .meta { display: flex; justify-content: space-between; opacity: .92; margin-top: 2px; }
+  .ph-card { margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .ph-card .t { background: var(--code); padding: 4px 8px; font-weight: 600; display: flex; justify-content: space-between; }
+  .ph-card table { margin: 0; font-size: 12px; }
+  .ph-card td, .ph-card th { padding: 2px 6px; text-align: center; border-width: 1px 0 0 0; }
+  .ph-card td:first-child, .ph-card th:first-child { text-align: left; color: var(--muted); }
+  .ph-card .now td { background: var(--accent-soft); }
+  .ph-card .cur { outline: 2px solid #2d7ff9; outline-offset: -2px; font-weight: 700; }
+  .ph-card .tot td { font-weight: 700; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+  .pad div { background: #2d7ff9; color: #fff; text-align: center; font-size: 22px; font-weight: 700; padding: 12px 0; border-radius: 10px; }
+  .pad div.s { background: var(--muted); }
+  .pad-tools { display: flex; gap: 6px; margin-top: 6px; }
+  .pad-tools div { flex: 1; text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; color: var(--muted); }
+  .mock-notes { flex: 1; min-width: 240px; }
+  .mock-notes li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Mini-Golf Scorecard — Spec</h1>
+<p class="sub">Single-file web app (<code>index.html</code>) for scoring a multi-course mini-golf session on a phone. v1.1 · 2026-10-14 · open questions resolved, playoffs added</p>
+
+<div class="legend">
+  <span>Untagged = from the original request</span>
+  <span><span class="tag added">Added</span> filled-in gap</span>
+  <span><span class="tag q">Decided</span> resolved in review, 2026-10-14</span>
+</div>
+
+<nav>
+<h3>Contents</h3>
+<ol>
+  <li><a href="#goals">Goals &amp; non-goals</a></li>
+  <li><a href="#venue">Venue &amp; course config</a></li>
+  <li><a href="#flow">Screens &amp; flow</a></li>
+  <li><a href="#scoring">Scoring screen</a></li>
+  <li><a href="#order">Turn order rules</a></li>
+  <li><a href="#numpad">Numpad, skip, undo/redo, edits</a></li>
+  <li><a href="#transitions">Course transitions &amp; game end</a></li>
+  <li><a href="#stats">Post-game stats</a></li>
+  <li><a href="#export">Copy scores / export / import</a></li>
+  <li><a href="#data">Persistence &amp; data model</a></li>
+  <li><a href="#platform">Phone &amp; browser concerns</a></li>
+  <li><a href="#edge">Edge cases</a></li>
+  <li><a href="#accept">Acceptance criteria</a></li>
+  <li><a href="#questions">Decision log</a></li>
+</ol>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="goals">1. Goals &amp; non-goals</h2>
+<h3>Goals</h3>
+<ul>
+  <li><strong>Minimum taps.</strong> After players exist: open page → tap <em>New game</em> → only number taps until the session is over. For 2 players that is <strong>1 + 18 + 16 + 18 = 53 taps</strong>; in general <code>1 + N × 26</code>.</li>
+  <li><strong>Always obvious</strong>: whose score is being entered, which course and hole, that player's running total, and their score on the prior hole.</li>
+  <li>Single HTML file, no dependencies, no build step, no network calls. All state in <code>localStorage</code>.</li>
+  <li>Designed for a portrait phone held in one hand.</li>
+  <li>Fun payoff at the end: stats, personal records, percentiles.</li>
+</ul>
+<h3>Non-goals (v1) <span class="tag added">Added</span></h3>
+<ul>
+  <li>Accounts, sync, or a backend. Moving data between devices is done by export/import.</li>
+  <li>Multiple simultaneous scorekeepers / devices.</li>
+  <li>Adding or removing a player mid-game (use Skip for someone who drops out).</li>
+  <li>A course editor UI. Courses are a config object in the source; adding a venue means editing the file.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="venue">2. Venue &amp; course config</h2>
+<p>One venue, three courses played back to back in this fixed order.</p>
+<table>
+  <tr><th>#</th><th>Course</th><th>Holes</th><th>Par</th><th>Scoring</th></tr>
+  <tr><td>1</td><td>Mini Golf</td><td>9</td><td>3 each (27)</td><td>Strokes, 1–8, 8-stroke cap. Lower is better.</td></tr>
+  <tr><td>2</td><td>Aces</td><td>8</td><td>none</td><td>One shot sets the score, 1–8. Lower is better.</td></tr>
+  <tr><td>3</td><td>Duffleboard</td><td>9</td><td>none</td><td>One shot sets the score, 1–8. Lower is better.</td></tr>
+</table>
+<p><span class="tag q">Decided</span> All three courses score 1–8, lower is better. On Mini Golf, 8 is the stroke cap: if you haven't holed out by stroke 8, you record an 8.</p>
+<p>Config lives in a single constant so another venue can be added later without touching logic: <span class="tag added">Added</span></p>
+<pre>const VENUES = [{
+  id: "redmond", name: "Redmond",
+  courses: [
+    { id: "redmond-mini",  name: "Mini Golf",   holes: 9, par: [3,3,3,3,3,3,3,3,3],
+      lowerIsBetter: true, keys: [1,2,3,4,5,6,7,8] },
+    { id: "redmond-aces",  name: "Aces",        holes: 8, par: null,
+      lowerIsBetter: true, keys: [1,2,3,4,5,6,7,8] },
+    { id: "redmond-duff",  name: "Duffleboard", holes: 9, par: null,
+      lowerIsBetter: true, keys: [1,2,3,4,5,6,7,8] }
+  ]
+}];</pre>
+<ul>
+  <li><code>id</code>s are permanent: records and percentiles are keyed by course id, so renaming a course keeps its history. If a course's layout really changes, give it a new id.</li>
+  <li><code>lowerIsBetter</code> controls winner, turn order, records and percentiles for that course.</li>
+  <li><code>keys</code> are the 8 values on the numpad (the 9th key is always <strong>S</strong>). All Redmond courses use 1–8. The setting exists so a future venue can use different values.</li>
+  <li>With only one venue, there is no venue picker. A picker appears only when <code>VENUES.length &gt; 1</code>.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="flow">3. Screens &amp; flow</h2>
+<pre>                 ┌─────────────┐
+ no players ───▶ │ Player setup│ ──Start──┐
+                 └─────────────┘          │
+                        ▲ "Players"       ▼
+ players exist ──▶ ┌──────────┐  New game  ┌───────────┐  last score  ┌────────┐
+                   │   Home   │ ─────────▶ │  Scoring  │ ───────────▶ │ Stats  │
+                   └──────────┘  Resume ─▶ └───────────┘              └────────┘
+                     │  History / Export / Import                        │ Home
+</pre>
+
+<h3>3.1 Player setup (first run, or "Players" from Home)</h3>
+<ul>
+  <li>Shown automatically when no players are stored.</li>
+  <li>A text field plus <em>Add</em>; Enter also adds. Names are trimmed, must be non-empty and unique (case-insensitive).</li>
+  <li>Saved players appear as a list with a checkbox for "playing today", plus rename and delete. <span class="tag added">Added</span> Deleting a player who has history only hides them (history and stats are kept).</li>
+  <li>1–6 players per game. <span class="tag added">Added</span> Six columns is about the most that fits a 360&nbsp;px wide screen at a readable size.</li>
+  <li>Who's playing today is remembered. The next <em>New game</em> reuses it with no extra screen.</li>
+</ul>
+
+<h3>3.2 Home</h3>
+<ul>
+  <li><strong>Resume game</strong>: the big primary button, shown only if a game is in progress, with a summary like <em>"Aces, hole 3 · started 2:14 pm"</em>.</li>
+  <li><strong>New game</strong>: the primary button when nothing is in progress, secondary otherwise. If a game is in progress, show a confirm (<em>"Abandon current game?"</em>). That extra tap only happens in this case. <span class="tag added">Added</span> An abandoned game is kept in history as <code>abandoned</code> and left out of stats.</li>
+  <li>Small links: <em>Players</em>, <em>History</em>, <em>Export all data</em>, <em>Import data</em>.</li>
+  <li>Line showing today's players: <em>"Playing: Adam, Sam, Jo"</em>. Tapping it opens Player setup.</li>
+</ul>
+
+<h3>3.3 New game</h3>
+<ul>
+  <li>One tap creates the game: all 3 scorecards, empty, with the remembered players.</li>
+  <li><strong>Random first order</strong>: the hole-1 order is a random shuffle of the players (Fisher–Yates over <code>crypto.getRandomValues</code>). A banner shows <em>"🎲 Sam goes first, then Adam, Jo"</em> and fades after the first score. No confirm tap.</li>
+  <li><em>Re-roll</em> link on the banner, usable until the first score is entered. <span class="tag added">Added</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="scoring">4. Scoring screen</h2>
+<div class="mock-wrap">
+  <div class="phone" aria-label="Scoring screen mockup">
+    <div class="ph-bar">
+      <div class="meta"><span>Mini Golf · Hole 4 / 9</span><span>Par 3</span></div>
+      <div class="who">Adam is up</div>
+      <div class="meta"><span>Total 9 (E)</span><span>Hole 3: 2</span></div>
+    </div>
+    <div class="ph-card">
+      <div class="t"><span>Mini Golf</span><span>par 27</span></div>
+      <table>
+        <tr><th>#</th><th>Sam</th><th>Adam</th><th>Jo</th></tr>
+        <tr><td>1</td><td>3</td><td>4</td><td>3</td></tr>
+        <tr><td>2</td><td>2</td><td>3</td><td>4</td></tr>
+        <tr><td>3</td><td>3</td><td>2</td><td>5</td></tr>
+        <tr class="now"><td>4</td><td>—</td><td class="cur">·</td><td></td></tr>
+        <tr><td>5</td><td></td><td></td><td></td></tr>
+        <tr class="tot"><td>Tot</td><td>8</td><td>9</td><td>12</td></tr>
+      </table>
+    </div>
+    <div class="ph-card"><div class="t"><span>Aces</span><span>8 holes</span></div></div>
+    <div class="pad">
+      <div>1</div><div>2</div><div>3</div>
+      <div>4</div><div>5</div><div>6</div>
+      <div>7</div><div>8</div><div class="s">S</div>
+    </div>
+    <div class="pad-tools"><div>↶ Undo</div><div>Redo ↷</div><div>⋯</div></div>
+  </div>
+  <div class="mock-notes">
+    <h3 style="margin-top:0">Layout, top to bottom</h3>
+    <ol>
+      <li><strong>Sticky "now up" bar</strong>: course · hole X / H · par; <strong>big player name</strong>; that player's course total (with ± par where par exists) and their score on the prior hole.</li>
+      <li><strong>Three scorecards stacked vertically</strong>: N player columns × H hole rows plus a total row. Columns stay in a fixed order (the order from setup) so they don't jump around. The current hole row is shaded and the cell being entered is outlined.</li>
+      <li><strong>Numpad fixed to the bottom</strong> (thumb zone): a 3×3 grid of 1–8 and S, with keys at least 64&nbsp;px tall.</li>
+      <li>Small row below the pad: Undo, Redo, and a menu (⋯) for Home, copy scores, and end game early.</li>
+    </ol>
+    <h3>Making "whose turn" unmistakable <span class="tag added">Added</span></h3>
+    <ul>
+      <li>Each player gets a stable color. The now-up bar <em>and the numpad</em> take the active player's color, so the color changes on every hand-off.</li>
+      <li>Small order badges (1, 2, 3) in the column headers show this hole's playing order. The next player is shown in the bar as <em>"next: Jo"</em>.</li>
+      <li>After each tap a quick toast confirms it, e.g. <em>"Adam · 2 ✓"</em>, and the cell flashes.</li>
+      <li>The page auto-scrolls so the current row is visible above the pad. Finished cards collapse to their total row, and tapping a card expands it again.</li>
+    </ul>
+  </div>
+</div>
+<p><strong>Prior hole score:</strong> the current player's score on the previous hole <em>of this course</em>. On hole 1 of Aces or Duffleboard, show the previous course's total instead (e.g. <em>"Mini Golf: 26"</em>). <span class="tag added">Added</span></p>
+
+<!-- ============================================================ -->
+<h2 id="order">5. Turn order rules</h2>
+<ul>
+  <li>Within a hole, each player finishes before the next starts. The app enters scores in this hole's order, one player at a time.</li>
+  <li><strong>The next hole's order</strong> sorts players by this hole's score, best first (using the course's <code>lowerIsBetter</code>).</li>
+  <li><strong>Ties</strong> keep their order from the current hole (stable sort). <span class="tag added">Added</span> This matches the usual "honors stay" convention.</li>
+  <li><strong>Skip</strong> ranks as worst on that hole. Several skips keep their current relative order. <span class="tag added">Added</span></li>
+  <li><strong>Across courses</strong> <span class="tag q">Decided</span>: hole 1 of the next course follows the <em>previous course's final standings</em>, not its last hole. Best total goes first. If the lead was tied, the playoff winner (§7.1) goes first. Any other ties keep their order from the previous course's last hole. Players with an unresolved skip on the previous course rank after everyone with a complete card.</li>
+  <li><strong>Playoff holes</strong> follow the same per-hole rule, applied only to the players in the playoff (§7.1).</li>
+  <li>Order is <em>derived</em>, never stored: it is recomputed from the scores (plus the stored hole-1 shuffle). That keeps undo and edits consistent with no extra bookkeeping.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="numpad">6. Numpad, skip, undo/redo, edits</h2>
+<h3>6.1 Numpad</h3>
+<ul>
+  <li>One tap records the score for the highlighted player/hole and moves on. There is no "enter" key.</li>
+  <li>Keys come from the course's <code>keys</code> (default 1–8). The 9th key is always <strong>S</strong>.</li>
+  <li><strong>Fat-finger guard</strong> <span class="tag added">Added</span>: ignore taps for about 250&nbsp;ms after a score is recorded, so a double tap doesn't score the next player. Use <code>pointerdown</code> for instant response and <code>touch-action: manipulation</code> to block double-tap zoom.</li>
+  <li>Short vibration on tap where supported (<code>navigator.vibrate(10)</code>; Android only, so skipped on iOS).</li>
+</ul>
+
+<h3>6.2 Skip (S)</h3>
+<p>S means the player didn't play that hole (bathroom break, hole closed, a kid wandered off). It is shown as <strong>S</strong> in the cell.</p>
+<div class="callout"><strong>Decided:</strong> a skip records no data. It adds nothing to the total, and the total shows a marker (e.g. <em>"24*"</em>). Skipped holes can be replayed at the end of the game (§7.2). A course that still has a skip is <em>incomplete</em> for that player: it stays in history, but it can't win the course, set a record, or count toward percentiles.</div>
+
+<h3>6.3 Undo / Redo</h3>
+<ul>
+  <li>The stack holds <em>actions</em>: <code>{type:"set", course, hole, player, prev, next}</code>. Undo restores <code>prev</code> and moves the cursor back to that cell. Redo re-applies.</li>
+  <li>Any new action after an undo clears the redo stack (standard behavior).</li>
+  <li>The stack is persisted with the game, so undo still works after a reload or Resume. <span class="tag added">Added</span></li>
+  <li>Undo can cross course boundaries (undoing the first Aces score goes back into Mini Golf). It cannot undo across "game finished": once the stats screen appears, use <em>Reopen game</em> instead. <span class="tag added">Added</span></li>
+  <li>Undo/Redo are disabled (greyed out) when their stack is empty.</li>
+</ul>
+
+<h3>6.4 Editing an earlier cell <span class="tag added">Added</span></h3>
+<p>Undo is the wrong tool for fixing a mistake from five holes ago. So:</p>
+<ul>
+  <li>Tapping any filled cell selects it. The bar turns amber and reads <em>"Editing Jo · Hole 2"</em>. The next numpad tap overwrites that cell (an undoable <code>set</code> action), and the cursor returns to the live position.</li>
+  <li>Tapping the same cell again, or the bar, cancels the edit.</li>
+  <li>Turn order for holes not yet played is recomputed. Holes already entered are left alone.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="transitions">7. Course transitions &amp; game end</h2>
+<ul>
+  <li>After the last regulation score of a course, the app checks for a tie for first:
+    <ul>
+      <li><strong>No tie</strong>: the app moves straight to the next course with <strong>no tap</strong>. A toast shows the result, e.g. <em>"Mini Golf: Sam wins, 24 – 27. Aces next"</em>. The finished card collapses and the next card scrolls into view.</li>
+      <li><strong>Tie for first</strong>: the app goes straight into a playoff (§7.1), also with no tap.</li>
+    </ul>
+  </li>
+  <li>When Duffleboard is resolved (including any playoff), the game moves to the end-of-game check (§7.2), then the Stats screen.</li>
+  <li><strong>End early</strong> (⋯ menu, with confirm): marks unentered cells as not played and finishes the game. Only fully played courses count toward wins, records and percentiles. <span class="tag added">Added</span></li>
+  <li><strong>Reopen game</strong> (Stats screen): returns to scoring to fix a mistake. Wins, playoffs and stats are recomputed when it finishes again. <span class="tag added">Added</span></li>
+</ul>
+
+<h3>7.1 Playoff holes (course tie-break) <span class="tag q">Decided</span></h3>
+<p>If two or more players tie for the lowest course total, they play sudden-death playoff holes to decide the course win.</p>
+<ul>
+  <li><strong>Who plays</strong>: only the players tied for first. Players tied for 2nd or lower don't have a playoff, because only the win counts.</li>
+  <li><strong>Which holes</strong>: replay from hole 1 (P1 = hole 1, P2 = hole 2, …). If the playoff runs past the course's last hole, wrap back to hole 1.</li>
+  <li><strong>Win condition</strong>: after each playoff hole, the player with a lower score than every other player in the playoff wins. If two or more tie for the lowest score on that hole, those players continue to the next playoff hole and anyone who scored higher is out. With two players, that simply means the first to beat the other wins. With three or more, the field narrows each hole.</li>
+  <li><strong>Order</strong>: P1 uses the order of the course's last regulation hole, filtered to the tied players. After that, the normal per-hole rule applies.</li>
+  <li><strong>Display</strong>: playoff rows appear on that course's card <em>below</em> the total row, labeled <code>P1 · h1</code>, <code>P2 · h2</code>, …, with non-participants' cells greyed out. The now-up bar reads <em>"Playoff · Mini Golf hole 1"</em> in a distinct accent color. When it's decided, the toast reads <em>"Sam wins the Mini Golf playoff on P2"</em>.</li>
+  <li><strong>Scoring effect</strong>: playoff strokes <em>do not</em> change course totals, records, percentiles or per-hole stats. They only decide the course win and the next course's order. The numpad, Undo/Redo and cell edits work in playoffs exactly as in regulation. Undoing the deciding playoff score reopens the playoff.</li>
+  <li><strong>Skip in a playoff</strong>: S means the player is out of the playoff (forfeit). If only one player is left, they win.</li>
+  <li><strong>Ties involving incomplete cards</strong>: a player with a skip on that course can't win it, so they're never in its playoff. If skips are replayed later (§7.2) and that creates a tie for first, the playoff happens then.</li>
+</ul>
+
+<h3>7.2 End of game: replay skipped holes <span class="tag q">Decided</span></h3>
+<ul>
+  <li>If no skips remain, the game finishes immediately: status becomes <code>finished</code>, <code>finishedAt</code> is set, and the Stats screen opens. The tap count is unchanged.</li>
+  <li>If skips remain, a sheet lists them (<em>"Adam: Mini Golf 4, Aces 2"</em>) with two buttons: <strong>Replay skipped holes</strong> and <strong>Finish anyway</strong>.
+    <ul>
+      <li><em>Replay</em> walks the cursor through each skipped cell, in course and hole order, then in column order. The now-up bar reads <em>"Replay · Adam · Mini Golf hole 4"</em>. Entering a number replaces the S. Tapping S again leaves the hole skipped. When the last one is done, course winners are recomputed, and any new tie for first triggers a playoff (§7.1) before the Stats screen.</li>
+      <li><em>Finish anyway</em>: remaining skips stay. Those players' courses are incomplete (no win, no record, no percentile).</li>
+    </ul>
+  </li>
+  <li>The course winner shown during play (toasts, next-course order) is provisional if a player with a skip could still change it by replaying. The toast says so: <em>"Mini Golf: Sam leads (Adam has 1 skip)"</em>.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="stats">8. Post-game stats</h2>
+<p>One scrollable screen, one section per course plus a session summary.</p>
+<h3>8.1 Per course</h3>
+<ul>
+  <li>Final standings with totals (and ± par for Mini Golf). The winner gets a 👑. If a playoff decided it, a note says <em>"won in a playoff on P2"</em>.</li>
+  <li><strong>Personal course record 🎉</strong>: if a player's total beats their best <em>complete</em> prior total on that course id, show a celebration card and a CSS confetti burst. A first-ever round counts as a record only quietly (<em>"First round, record set"</em>), not with confetti. Matching a record shows <em>"Tied your best"</em>.</li>
+  <li><strong>Percentile</strong>: <em>"Better than 82% of all Mini Golf rounds"</em>.
+    <ul>
+      <li>Definition: <code>(rounds beaten + 0.5 × rounds tied) / prior rounds × 100</code>, rounded.</li>
+      <li><span class="tag q">Decided</span> Show both:
+        <ul>
+          <li><strong>All players</strong>: compared with every complete round on that course by anyone before this game. <em>"Better than 82% of all Mini Golf rounds"</em></li>
+          <li><strong>Personal</strong>: compared with the player's own earlier complete rounds. <em>"Better than 70% of your rounds · your 3rd best of 11"</em></li>
+        </ul>
+      </li>
+      <li>Each percentile has its own threshold: it appears only with at least 5 prior rounds in its pool.</li>
+      <li>Shown only when there are at least 5 prior rounds. Otherwise show <em>"Round 3 on record, percentiles start at 5"</em>. <span class="tag added">Added</span></li>
+    </ul>
+  </li>
+  <li>Highlights <span class="tag added">Added</span>: holes-in-one (Mini Golf score of 1), best hole relative to the group, and hardest hole today (highest average).</li>
+</ul>
+<h3>8.2 Session summary <span class="tag added">Added</span></h3>
+<ul>
+  <li><span class="tag q">Decided</span> <strong>The session winner is whoever wins the most courses.</strong> Thanks to playoffs, every complete course has exactly one winner. Totals from different courses aren't added together.</li>
+  <li>A tie in course wins is possible with 3 or more players (1–1–1). In that case they're co-champions; no extra tie-break.</li>
+  <li>Lifetime head-to-head among today's players: <em>"Adam vs Sam: 7–4 in course wins"</em>.</li>
+  <li>Buttons: <em>Copy scores</em>, <em>Reopen game</em>, <em>Home</em>.</li>
+</ul>
+<h3>8.3 History screen <span class="tag added">Added</span></h3>
+<p>A list of past games (date, players, course winners). Tapping one shows its read-only scorecards and stats. Per-player view: rounds played per course, best, average, and a simple trend.</p>
+
+<!-- ============================================================ -->
+<h2 id="export">9. Copy scores / export / import</h2>
+<h3>9.1 Copy scores (one game, human-readable)</h3>
+<p>Available from the ⋯ menu and the Stats screen. Plain text that reads well in a text message:</p>
+<pre>⛳ Redmond · Tue Oct 14 2026
+
+Mini Golf (par 27)
+      1 2 3 4 5 6 7 8 9  Tot
+Sam   3 2 3 3 2 4 3 3 1   24  👑
+Adam  4 3 2 3 3 3 4 2 3   27
+Jo    3 4 5 3 3 2 3 3 4   30
+...
+
+Aces
+Sam   2 3 1 4 2 2 3 1      18
+Adam  3 1 2 2 3 2 3 2      18  👑
+      Playoff: Adam 2, Sam 3 (P1)
+
+Course wins: Sam 2, Adam 1
+🎉 Sam: new Mini Golf record (24)</pre>
+<p>Use a monospaced-friendly layout with player names padded to the same width. Skips print as <code>S</code>, and totals with a skip get a <code>*</code>. A playoff prints as one line under its course.</p>
+
+<h3>9.2 Export all data</h3>
+<ul>
+  <li>Copies the full storage object as pretty-printed JSON, wrapped in a small envelope: <code>{ app: "golf-scorecard", schemaVersion, exportedAt, data }</code>.</li>
+  <li>Also offers <em>Email it</em> (<code>mailto:</code> with the JSON in the body) and <em>Download .json</em>. Long <code>mailto:</code> bodies get truncated on some clients, so copy-to-clipboard stays the main path. <span class="tag added">Added</span></li>
+  <li>The Home screen shows <em>"Last export: 23 days ago"</em> as a gentle backup reminder. <span class="tag added">Added</span></li>
+</ul>
+
+<h3>9.3 Import <span class="tag added">Added</span></h3>
+<p>Export with no import is only half a backup. Import exists because localStorage is tied to a browser and URL (see §11). Without it, data can't move to a new phone, survive a hosting move, or be recovered after Safari clears storage.</p>
+<ul>
+  <li>Paste JSON into a textarea (or pick a file) → validate → show a preview (<em>"4 players, 17 games"</em>) → choose <strong>Merge</strong> (default; dedupes by id) or <strong>Replace</strong> (asks to confirm and exports the current data first automatically).</li>
+  <li>Older <code>schemaVersion</code>s are migrated. Newer ones are rejected with a clear message.</li>
+</ul>
+
+<h3>9.4 Clipboard mechanics</h3>
+<p>Use <code>navigator.clipboard.writeText</code>. It only works in a secure context (https or localhost), so when it isn't available or fails, fall back to a hidden textarea with <code>select()</code> + <code>document.execCommand("copy")</code>. If that also fails, show the text in a selectable modal. Always confirm with a toast: <em>"Copied ✓"</em>.</p>
+
+<!-- ============================================================ -->
+<h2 id="data">10. Persistence &amp; data model</h2>
+<p>One <code>localStorage</code> key, <code>golfScorecard.v1</code>, holding a single JSON object. It is written after every action (it's small, and synchronous writes are fine).</p>
+<pre>{
+  schemaVersion: 1,
+  players: [ { id, name, color, hidden: false, createdAt } ],
+  lastRoster: [playerId, ...],          // "playing today"
+  currentGameId: "g_..." | null,
+  lastExportAt: ISO | null,
+  games: [{
+    id, venueId: "redmond",
+    status: "active" | "finished" | "abandoned",
+    startedAt, finishedAt,
+    playerIds: [...],                   // column order
+    firstOrder: [...],                  // random hole-1 order
+    courses: [{
+      courseId: "redmond-mini",
+      scores: { [playerId]: [3, 2, "S", null, ...] },  // null = not entered
+      playoff: null | {                                 // only if tied for first
+        playerIds: [...],                               // who's in it
+        scores: { [playerId]: [2, 3, ...] }             // index 0 = P1 (hole 1)
+      }
+    }, ...],
+    replayQueue: null | [{ course, hole, playerId }],   // set when "Replay skipped holes" is chosen
+    undo: [action, ...], redo: [action, ...]
+  }]
+}</pre>
+<ul>
+  <li>The cursor (current course/hole/player) is <strong>derived</strong>, never stored, so it can't drift out of sync. It is the first empty cell in turn order. A course with an unfinished playoff takes priority over the next course's hole 1. During replay it is the head of <code>replayQueue</code>.</li>
+  <li>Course winners, playoff eliminations, and the playoff winner are all derived from the scores too. Undo actions also cover playoff cells and replay steps (<code>{type:"set", course, hole, player, playoff: true, ...}</code>).</li>
+  <li>Records, percentiles, and history stats are computed from <code>games</code> when needed. A few hundred games is trivial to scan.</li>
+  <li>Ids: <code>crypto.randomUUID()</code>, with a fallback for older browsers.</li>
+  <li>If a write fails (quota or private mode), show a red banner saying <em>scores are not being saved</em>, with an Export button.</li>
+  <li>Changing the storage shape means bumping <code>schemaVersion</code> and adding a migration function. Never break old data.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="platform">11. Phone &amp; browser concerns <span class="tag added">Added</span></h2>
+<ul>
+  <li><strong>Hosting decides where the data lives.</strong> localStorage belongs to the origin (scheme + host). Opening <code>file://</code> on a phone is awkward and breaks the clipboard API. <span class="tag q">Decided</span> It will be hosted on GitHub Pages once the repo has a remote (not yet). Until then, test on a desktop browser, or serve it on the LAN (e.g. <code>python -m http.server</code>) for a phone. LAN http isn't a secure context, so the clipboard fallback (§9.4) gets exercised. Treat data from before Pages as test data, or move it with export → import.</li>
+  <li><strong>iOS Safari storage eviction.</strong> Safari can delete localStorage for sites that haven't been visited in 7 days, unless the site was added to the Home Screen. The app should (a) suggest <em>Add to Home Screen</em> on first run on iOS, (b) call <code>navigator.storage.persist()</code> where available, and (c) show the "last export" reminder.</li>
+  <li><strong>Screen sleep.</strong> Request a Screen Wake Lock (<code>navigator.wakeLock.request("screen")</code>) while the scoring screen is open, and re-request it on <code>visibilitychange</code>. This saves unlocking the phone every hole.</li>
+  <li><strong>Offline.</strong> A single file with no service worker still needs the network to <em>load</em>, but works offline once open, and Resume survives a reload once you have signal again. A service worker would need a second file, so it's out of scope for v1.</li>
+  <li><strong>Viewport:</strong> <code>width=device-width, initial-scale=1, viewport-fit=cover</code>; respect <code>env(safe-area-inset-bottom)</code> under the numpad; <code>overscroll-behavior: none</code> to stop accidental pull-to-refresh.</li>
+  <li><strong>Theme:</strong> follow the system light/dark setting. High contrast for bright sunlight. System font, large type (the player name at about 28&nbsp;px or more).</li>
+  <li><strong>Accessibility:</strong> numpad keys are real <code>&lt;button&gt;</code>s; the now-up bar is an <code>aria-live="polite"</code> region; colors are never the only cue (the name text is always shown).</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="edge">12. Edge cases <span class="tag added">Added</span></h2>
+<table>
+  <tr><th>Case</th><th>Behavior</th></tr>
+  <tr><td>Single player</td><td>Works. No order logic and no playoffs; the player wins every complete course. Percentiles still compare against all players' rounds.</td></tr>
+  <tr><td>Everyone ties a hole</td><td>Order is unchanged.</td></tr>
+  <tr><td>Tab reloaded / phone restarts mid-game</td><td>Home shows Resume, which lands on the exact cell.</td></tr>
+  <tr><td>Two tabs open</td><td>Listen to the <code>storage</code> event and reload state, so the last writer doesn't silently win.</td></tr>
+  <tr><td>Player renamed</td><td>History follows the id, so old games show the new name.</td></tr>
+  <tr><td>Player plays every hole but S on one</td><td>Total shows <code>*</code>. Offered for replay at game end. If still skipped, that course is incomplete: no win, record, or percentile.</td></tr>
+  <tr><td>Score above 8 on Mini Golf</td><td>8 is the stroke cap, so record 8.</td></tr>
+  <tr><td>Everyone tied for first on a course</td><td>Everyone goes into the playoff.</td></tr>
+  <tr><td>Playoff passes the last hole</td><td>Wraps back to hole 1 (P10 on Mini Golf = hole 1).</td></tr>
+  <tr><td>Three-way tie, one player beaten on P1</td><td>That player is out. The other two continue to P2.</td></tr>
+  <tr><td>Editing a regulation score after a playoff finishes</td><td>The tie may disappear or change. Re-derive it: if there's no longer a tie, playoff rows are hidden (kept in undo history). If the set of tied players changed, the old playoff scores are discarded and a new playoff starts.</td></tr>
+  <tr><td>Corrupt / unparseable storage</td><td>Don't overwrite it. Move it to <code>golfScorecard.corrupt.&lt;ts&gt;</code>, start fresh, and offer to copy the raw text.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="accept">13. Acceptance criteria</h2>
+<ol>
+  <li>With no stored data, the page opens to Player setup. After adding 2 players and tapping Start, scoring begins.</li>
+  <li>With players stored and no ties or skips, <strong>a full 2-player session takes exactly 53 taps</strong>: New game plus 52 numpad taps, ending on the Stats screen. With 3 players it takes 79. Each playoff hole adds one tap per remaining player. Skips add one tap at game end plus one per replayed hole.</li>
+  <li>A tie for first on a course starts playoff holes from hole 1 with no extra tap. The first player to score strictly lower than all remaining players wins the course. Playoff strokes don't change course totals.</li>
+  <li>Course 2 and 3 hole-1 order follows the previous course's standings, with the playoff winner first.</li>
+  <li>At every point before game end, the screen shows course, hole, active player name, that player's course total, and their prior-hole score, with no scrolling.</li>
+  <li>Hole N+1 order equals hole N scores sorted best first, with stable ties and skips last.</li>
+  <li>Undo × k followed by Redo × k returns to an identical state, including after a page reload in between.</li>
+  <li>Killing the browser mid-hole and reopening, then tapping Resume, lands on the same cell with the same undo stack.</li>
+  <li>Copy scores produces the plain-text format in §9.1. Export all → Import (Replace) on a clean browser gives identical history and stats.</li>
+  <li>A new best complete round triggers the record celebration. Percentiles appear only after 5 or more prior rounds on that course.</li>
+  <li>Works in current iOS Safari and Android Chrome at 360–430&nbsp;px width with no horizontal scroll.</li>
+  <li><code>index.html</code> loads nothing external: no CDN, fonts, or images other than inline/emoji.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="questions">14. Decision log</h2>
+<table>
+  <tr><th>#</th><th>Question</th><th>Decision (2026-10-14)</th></tr>
+  <tr><td>1</td><td>Aces &amp; Duffleboard scoring</td><td>Lower is better, scores 1–8 (§2).</td></tr>
+  <tr><td>2</td><td>Skip in totals</td><td>Records no data. Skipped holes can be replayed at game end (§6.2, §7.2).</td></tr>
+  <tr><td>3</td><td>Order at start of courses 2 &amp; 3</td><td>Previous course's standings, not its last hole (§5).</td></tr>
+  <tr><td>4</td><td>Mini Golf stroke cap</td><td>8 strokes.</td></tr>
+  <tr><td>5</td><td>Percentile population</td><td>Both personal and all players (§8.1).</td></tr>
+  <tr><td>6</td><td>Hosting</td><td>GitHub Pages, once a remote exists (§11).</td></tr>
+  <tr><td>7</td><td>Session winner</td><td>Most course wins. Course ties are broken by sudden-death playoff holes starting at hole 1 (§7.1).</td></tr>
+</table>
+<p>No open questions remain.</p>
+
+</main>
+</body>
+</html>
