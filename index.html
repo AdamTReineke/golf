@@ -302,7 +302,9 @@ const Golf = (() => {
 
   // Spec section 2. Changing a course id breaks its history: ids are permanent.
   const VENUES = [{
-    id: 'redmond', name: 'Redmond',
+    id: 'redmond', name: 'Flatstick Redmond',
+    address: '7530 164th Ave NE, Suite A108, Redmond, WA 98052',
+    location: { lat: 47.67199, lng: -122.12129 },
     courses: [
       { id: 'redmond-mini', name: 'Mini Golf', holes: 9, par: [3, 3, 3, 3, 3, 3, 3, 3, 3],
         lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
@@ -311,6 +313,46 @@ const Golf = (() => {
       { id: 'redmond-duff', name: 'Duffleboard', holes: 9, par: null,
         lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
     ],
+  }, {
+    id: 'flatstick-kirkland', name: 'Flatstick Kirkland',
+    address: '15 Lake St, Suite 100, Kirkland, WA 98033',
+    location: { lat: 47.67594, lng: -122.20730 },
+    courses: [],
+  }, {
+    id: 'flatstick-pioneer-square', name: 'Flatstick Pioneer Square',
+    address: '240 2nd Ave S, Seattle, WA 98104',
+    location: { lat: 47.60016, lng: -122.33101 },
+    courses: [],
+  }, {
+    id: 'flatstick-slu', name: 'Flatstick South Lake Union',
+    address: '609 Westlake Ave N, Seattle, WA 98109',
+    location: { lat: 47.62502, lng: -122.33877 },
+    courses: [],
+  }, {
+    id: 'flatstick-woodinville', name: 'Flatstick Woodinville',
+    address: '13205 NE 175th St, Woodinville, WA 98072',
+    location: { lat: 47.75422, lng: -122.16296 }, // TODO verify: OSM address point, not a tagged Flatstick POI
+    courses: [
+      { id: 'woodinville-mini', name: 'Mini Golf', holes: 9, par: [3, 3, 3, 3, 3, 3, 3, 3, 3],
+        lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
+      { id: 'woodinville-duff', name: 'Duffleboard', holes: 9, par: null,
+        lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] },
+      ],
+  }, {
+    id: 'flatstick-spokane', name: 'Flatstick Spokane',
+    address: '618 W Main Ave, Spokane, WA 99201',
+    location: { lat: 47.65923, lng: -117.42185 },
+    courses: [],
+  }, {
+    id: 'willows-run', name: 'Willows Run (Rainbow Run)',
+    address: '10402 Willows Rd NE, Redmond, WA 98052',
+    location: { lat: 47.69019, lng: -122.14915 }, // TODO verify: clubhouse coords; putting course itself is not mapped
+    courses: [],
+  }, {
+    id: 'desert-canyon', name: 'Desert Canyon',
+    address: '1201 Desert Canyon Blvd, Orondo, WA 98843',
+    location: { lat: 47.72039, lng: -120.18549 }, // TODO verify: clubhouse building coords; putting course itself is not mapped
+    courses: [],
   }];
 
   // Eight distinct colors that read on both light and dark backgrounds.
@@ -403,12 +445,54 @@ const Golf = (() => {
     return VENUES.find((v) => v.id === venueId) || null;
   }
 
+  // The venue with that id if it has courses, else null. Venues without courses stay
+  // out of the picker, geolocation and new games until courses are added (spec 2).
+  function playableVenue(venueId) {
+    const venue = getVenue(venueId);
+    return venue && venue.courses.length ? venue : null;
+  }
+
+  function playableVenues(venues = VENUES) {
+    return venues.filter((venue) => venue.courses.length > 0);
+  }
+
   function getCourse(courseId) {
     for (const venue of VENUES) {
       const course = venue.courses.find((c) => c.id === courseId);
       if (course) return course;
     }
     return null;
+  }
+
+  // The venue the setup screen picks for the next game. Saved so the next setup reuses it.
+  function setVenue(state, venueId) {
+    if (!playableVenue(venueId)) throw new Error('That venue is not in the list.');
+    const next = clone(state);
+    next.lastVenueId = venueId;
+    return next;
+  }
+
+  const EARTH_RADIUS_KM = 6371;
+
+  // Great-circle distance in km between two {lat, lng} points (haversine).
+  function distanceKm(a, b) {
+    const rad = (deg) => (deg * Math.PI) / 180;
+    const dLat = rad(b.lat - a.lat);
+    const dLng = rad(b.lng - a.lng);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  // The closest venue with a location within maxKm of pos, as {venue, km}, or null.
+  // Venues without a location are skipped. By default only playable venues are checked.
+  function nearestVenue(pos, venues = playableVenues(), maxKm = 1) {
+    let best = null;
+    for (const venue of venues) {
+      if (!venue.location) continue;
+      const km = distanceKm(pos, venue.location);
+      if (km <= maxKm && (!best || km < best.km)) best = { venue, km };
+    }
+    return best;
   }
 
   // ---- players ---------------------------------------------------------------
@@ -517,10 +601,10 @@ const Golf = (() => {
       || Object.values(c.scores).some((arr) => arr.some((v) => v !== null)));
   }
 
-  // Creates an active game from lastRoster. Any previously active game becomes
-  // 'abandoned'. The caller decides whether to confirm first.
-  function newGame(state, rand = Math.random, now = null) {
-    const venue = defaultVenue();
+  // Creates an active game from lastRoster at venueId (default venue if missing, unknown or without courses).
+  // Any previously active game becomes 'abandoned'. The caller decides whether to confirm first.
+  function newGame(state, rand = Math.random, now = null, venueId = null) {
+    const venue = playableVenue(venueId) || defaultVenue();
     const roster = state.lastRoster.slice();
     validateRoster(state, roster);
     const game = {
@@ -1328,8 +1412,12 @@ const Golf = (() => {
   }
 
   // Per course: rounds, best total, average (1 decimal) and the last five totals (oldest first).
+  // Covers the default venue's courses, plus any other course the player has rounds on.
   function playerHistory(state, playerId) {
-    return defaultVenue().courses.map((course) => {
+    const home = new Set(defaultVenue().courses.map((c) => c.id));
+    const courses = VENUES.flatMap((venue) => venue.courses).filter((course) => home.has(course.id)
+      || courseRounds(state, course.id).some((r) => r.playerId === playerId));
+    return courses.map((course) => {
       const totals = courseRounds(state, course.id)
         .filter((r) => r.playerId === playerId)
         .sort((a, b) => timeOf(a.finishedAt) - timeOf(b.finishedAt))
@@ -1596,6 +1684,7 @@ const Golf = (() => {
       schemaVersion: SCHEMA_VERSION,
       players,
       lastRoster: cur.lastRoster,
+      lastVenueId: cur.lastVenueId,
       currentGameId,
       lastExportAt,
       games,
@@ -1606,7 +1695,7 @@ const Golf = (() => {
     SCHEMA_VERSION, APP_ID, MIN_ROSTER, MAX_ROSTER, VENUES, PALETTE,
     gameStats, playerHistory, listGames, latestFinishedGameId, percentileOf, recordFor, MIN_POOL,
     emptyState, migrate, makeId, shuffle,
-    getVenue, getCourse,
+    getVenue, getCourse, playableVenues, setVenue, distanceKm, nearestVenue,
     visiblePlayers, getPlayer, rosterPlayers,
     addPlayer, renamePlayer, hidePlayer, setRoster,
     getGame, getActiveGame, hasAnyScore, newGame,
@@ -1644,6 +1733,9 @@ const Golf = (() => {
   let readOnly = false;         // when true nothing is written, so unreadable data is never overwritten
   let editingId = null;         // player being renamed in setup
   let setupError = '';
+  let nearby = null;            // {venue, km} from this visit's location check, or null
+  let venueTouched = false;     // the user picked a venue on the setup screen this visit
+  let venueRequest = 0;         // bumped on each visit, so a late location answer is ignored
   let toastTimer = null;
   let scrollPending = false;    // scroll the cursor into view on the next scoring render
   let menuOpen = false;         // the ⋯ menu above the tools row
@@ -2019,6 +2111,7 @@ const Golf = (() => {
     if (name === 'scoring') scrollPending = true;
     render();
     if (name !== 'scoring') window.scrollTo(0, 0);
+    if (name === 'setup') locateVenue();
   }
 
   // ---- wake lock (spec 11) ---------------------------------------------------
@@ -2170,6 +2263,50 @@ const Golf = (() => {
       </section>`;
   }
 
+  // ---- venue picker and location (spec 2) -----------------------------------
+
+  // The venue the next game starts at: the nearby one until the user picks, then the saved pick.
+  function selectedVenueId() {
+    if (nearby && !venueTouched) return nearby.venue.id;
+    const playable = Golf.playableVenues();
+    return playable.some((v) => v.id === state.lastVenueId) ? state.lastVenueId : playable[0].id;
+  }
+
+  // Asks for the position once per visit to setup. Never blocks: on error, denial or no
+  // nearby venue nothing changes.
+  function locateVenue() {
+    const request = ++venueRequest;
+    nearby = null;
+    venueTouched = false;
+    if (Golf.playableVenues().length < 2 || !window.isSecureContext || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition((pos) => {
+      if (request !== venueRequest || screen !== 'setup' || venueTouched) return;
+      nearby = Golf.nearestVenue({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      updateVenuePicker();
+    }, () => {}, { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 });
+  }
+
+  // Syncs the picker and hint in place, so text typed in the add-player box survives.
+  function updateVenuePicker() {
+    const selected = selectedVenueId();
+    document.querySelectorAll('input[name="venue"]').forEach((r) => { r.checked = r.value === selected; });
+    const hint = document.querySelector('#venue-hint');
+    if (!hint) return;
+    const show = !!nearby && !venueTouched;
+    hint.hidden = !show;
+    hint.textContent = show ? `📍 You're at ${nearby.venue.name}` : '';
+  }
+
+  // Radio list of venues, shown only when there is more than one (spec 2).
+  function venuePicker() {
+    const selected = selectedVenueId();
+    const show = !!nearby && !venueTouched;
+    const options = Golf.playableVenues().map((v) => `<label class="choice"><input type="radio" name="venue" value="${esc(v.id)}" ${v.id === selected ? 'checked' : ''}><span>${esc(v.name)}${v.address ? ` <span class="hint">${esc(v.address)}</span>` : ''}</span></label>`).join('');
+    return `<p class="section-label">Venue</p>
+      <div role="radiogroup" aria-label="Venue">${options}</div>
+      <p class="hint" id="venue-hint"${show ? '' : ' hidden'}>${show ? `📍 You're at ${esc(nearby.venue.name)}` : ''}</p>`;
+  }
+
   function viewSetup() {
     const roster = new Set(state.lastRoster);
     const full = roster.size >= Golf.MAX_ROSTER;
@@ -2209,6 +2346,7 @@ const Golf = (() => {
       <p class="section-label">Playing today: ${roster.size} of ${Golf.MAX_ROSTER}</p>
       <ul class="list">${rows}</ul>
       ${players.length ? '' : '<p class="hint">No players yet. Add the people playing today.</p>'}
+      ${Golf.playableVenues().length > 1 ? venuePicker() : ''}
       <button class="btn big primary" data-action="start" ${roster.size < Golf.MIN_ROSTER ? 'disabled' : ''}>${active ? 'Start new game' : 'Start game'}</button>
       <p class="hint">Starting a game shuffles the hole 1 order.</p>`;
   }
@@ -2845,7 +2983,8 @@ const Golf = (() => {
     if (Golf.rosterPlayers(state).length === 0) { go('setup'); return; }
     if (Golf.getActiveGame(state) && !confirm('Abandon current game?')) return;
     try {
-      commit(Golf.newGame(state, cryptoRand, nowISO()), 'scoring');
+      const venueId = selectedVenueId();
+      commit(Golf.setVenue(Golf.newGame(state, cryptoRand, nowISO(), venueId), venueId), 'scoring');
     } catch (e) {
       toast(e.message);
     }
@@ -3129,7 +3268,10 @@ const Golf = (() => {
   document.addEventListener('change', (event) => {
     const el = event.target;
     if (el.matches('[data-action="toggle"]')) toggleRoster(el.dataset.id, el.checked);
-    else if (el.id === 'import-file') readImportFile(el.files && el.files[0]);
+    else if (el.name === 'venue') {
+      venueTouched = true;
+      commit(Golf.setVenue(state, el.value));
+    } else if (el.id === 'import-file') readImportFile(el.files && el.files[0]);
     else if (el.name === 'import-mode') {
       importMode = el.value === 'replace' ? 'replace' : 'merge';
       render();
@@ -3199,6 +3341,7 @@ const Golf = (() => {
     screen = current && current.status === 'finished' ? 'stats' : 'home';
   }
   render();
+  if (screen === 'setup') locateVenue();
 })();
 </script>
 </body>

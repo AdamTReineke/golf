@@ -37,10 +37,14 @@ function withPlayers(names, rand = seeded(1)) {
 }
 
 test('VENUES matches spec section 2', () => {
-  assert.strictEqual(Golf.VENUES.length, 1);
+  assert.deepStrictEqual(plain(Golf.VENUES.map((v) => v.id)), [
+    'redmond', 'flatstick-kirkland', 'flatstick-pioneer-square', 'flatstick-slu', 'flatstick-woodinville',
+    'flatstick-spokane', 'willows-run', 'desert-canyon',
+  ]);
+  assert.deepStrictEqual(plain(Golf.VENUES.slice(1).map((v) => v.courses.length)), [0, 0, 0, 0, 0, 0, 0]);
   const venue = plain(Golf.VENUES[0]);
   assert.strictEqual(venue.id, 'redmond');
-  assert.strictEqual(venue.name, 'Redmond');
+  assert.strictEqual(venue.name, 'Flatstick Redmond');
   assert.deepStrictEqual(venue.courses.map((c) => c.id), ['redmond-mini', 'redmond-aces', 'redmond-duff']);
   assert.deepStrictEqual(venue.courses.map((c) => c.name), ['Mini Golf', 'Aces', 'Duffleboard']);
   assert.deepStrictEqual(venue.courses.map((c) => c.holes), [9, 8, 9]);
@@ -51,6 +55,12 @@ test('VENUES matches spec section 2', () => {
     assert.strictEqual(course.lowerIsBetter, true);
     assert.deepStrictEqual(course.keys, [1, 2, 3, 4, 5, 6, 7, 8]);
   }
+});
+
+test('redmond has its address and location', () => {
+  const venue = plain(Golf.VENUES[0]);
+  assert.strictEqual(venue.address, '7530 164th Ave NE, Suite A108, Redmond, WA 98052');
+  assert.deepStrictEqual(venue.location, { lat: 47.67199, lng: -122.12129 });
 });
 
 test('PALETTE has 8 distinct colors', () => {
@@ -1306,7 +1316,7 @@ test('scoresText: a full game in the spec 9.1 layout, with crown, playoff, and w
   });
   gameOf(state).startedAt = localIso(2026, 10, 14, 19, 14);
   assert.strictEqual(Golf.scoresText(state, gameId), [
-    '⛳ Redmond · Wed Oct 14 2026',
+    '⛳ Flatstick Redmond · Wed Oct 14 2026',
     '',
     'Mini Golf (par 27)',
     '      1 2 3 4 5 6 7 8 9  Tot',
@@ -1332,7 +1342,7 @@ test('scoresText: an in-progress game pads names, prints S and blanks, marks inc
   const { state, gameId } = setup(['Sam', 'Jo'], { Sam: [3, 'S', 4], Jo: [3, 3] });
   gameOf(state).startedAt = localIso(2026, 10, 14, 19, 14);
   assert.strictEqual(Golf.scoresText(state, gameId), [
-    '⛳ Redmond · Wed Oct 14 2026',
+    '⛳ Flatstick Redmond · Wed Oct 14 2026',
     '',
     'Mini Golf (par 27)',
     '     1 2 3 4 5 6 7 8 9  Tot',
@@ -1508,4 +1518,138 @@ test('mergeStates keeps the later lastExportAt, and merging a state with itself 
   assert.strictEqual(plain(Golf.mergeStates(earlier, later)).lastExportAt, DAY(2));
   assert.strictEqual(plain(Golf.mergeStates(later, earlier)).lastExportAt, DAY(2));
   assert.deepStrictEqual(plain(Golf.mergeStates(state, state)), plain(state));
+});
+
+// ---- venue geolocation and venue choice (spec 2) ---------------------------
+
+const SEATTLE = { lat: 47.6062, lng: -122.3321 };
+const REDMOND = { lat: 47.67395, lng: -122.12285 };
+
+// The logic with extra venues appended after the real ones, for tests that need
+// a second venue. The real VENUES stays a single entry.
+function golfWithExtraVenues(extra) {
+  const src = match[1].replace('deepFreeze(VENUES);', 'VENUES.push(...EXTRA_VENUES);\n  deepFreeze(VENUES);');
+  assert.notStrictEqual(src, match[1], 'the VENUES seam must exist');
+  return vm.runInNewContext(`${src}\n;Golf`, { EXTRA_VENUES: extra });
+}
+
+test('distanceKm gives the straight-line distance between Seattle and Redmond', () => {
+  const km = Golf.distanceKm(SEATTLE, REDMOND);
+  assert.ok(km > 17 && km < 17.8, `expected about 17.4 km, got ${km}`);
+  assert.strictEqual(Golf.distanceKm(REDMOND, REDMOND), 0);
+  assert.ok(Math.abs(km - Golf.distanceKm(REDMOND, SEATTLE)) < 1e-9, 'symmetric');
+});
+
+test('nearestVenue returns the venue within maxKm, or null outside it', () => {
+  const venues = [{ id: 'a', name: 'A', courses: [], location: REDMOND }];
+  const hit = Golf.nearestVenue({ lat: 47.6741, lng: -122.1229 }, venues);
+  assert.strictEqual(plain(hit.venue).id, 'a');
+  assert.ok(hit.km < 0.1, `expected a few metres, got ${hit.km}`);
+  assert.strictEqual(Golf.nearestVenue(SEATTLE, venues), null);
+  const north = { lat: 47.6851, lng: -122.12285 }; // about 1.2 km north of the venue
+  assert.strictEqual(Golf.nearestVenue(north, venues), null);
+  assert.strictEqual(Golf.nearestVenue(north, venues, 2).venue.id, 'a');
+});
+
+test('nearestVenue ignores venues without a location', () => {
+  const venues = [
+    { id: 'no-loc', name: 'No location', courses: [] },
+    { id: 'far', name: 'Far', courses: [], location: SEATTLE },
+  ];
+  assert.strictEqual(Golf.nearestVenue(REDMOND, venues), null);
+  venues.push({ id: 'here', name: 'Here', courses: [], location: REDMOND });
+  assert.strictEqual(plain(Golf.nearestVenue(REDMOND, venues).venue).id, 'here');
+});
+
+test('nearestVenue picks the closer of two venues in range', () => {
+  const venues = [
+    { id: 'east', name: 'East', courses: [], location: { lat: 47.67395, lng: -122.11835 } },
+    { id: 'north', name: 'North', courses: [], location: { lat: 47.67545, lng: -122.12285 } },
+  ];
+  const hit = Golf.nearestVenue(REDMOND, venues);
+  assert.strictEqual(plain(hit.venue).id, 'north');
+  assert.ok(hit.km < Golf.distanceKm(REDMOND, venues[0].location), 'closer than the other venue');
+});
+
+test('newGame starts at the chosen venue, using its courses', () => {
+  const G = golfWithExtraVenues([{
+    id: 'elsewhere', name: 'Elsewhere', address: 'Somewhere', location: SEATTLE,
+    courses: [{ id: 'elsewhere-mini', name: 'Mini', holes: 6, par: null,
+      lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] }],
+  }]);
+  let state = G.emptyState();
+  state = G.addPlayer(state, 'Sam', seeded(1), NOW);
+  state = G.addPlayer(state, 'Adam', seeded(2), NOW);
+  state = G.setRoster(state, state.players.map((p) => p.id));
+  const game = plain(G.getActiveGame(G.newGame(state, seeded(5), NOW, 'elsewhere')));
+  assert.strictEqual(game.venueId, 'elsewhere');
+  assert.deepStrictEqual(game.courses.map((c) => c.courseId), ['elsewhere-mini']);
+  assert.deepStrictEqual(game.courses[0].scores[state.lastRoster[0]], new Array(6).fill(null));
+  // An unknown or missing venue falls back to the default venue.
+  assert.strictEqual(plain(G.getActiveGame(G.newGame(state, seeded(5), NOW, 'nope'))).venueId, 'redmond');
+  assert.strictEqual(plain(G.getActiveGame(G.newGame(state, seeded(5), NOW))).venueId, 'redmond');
+});
+
+test('setVenue saves the pick and rejects an unknown venue', () => {
+  const state = withPlayers(['Sam']);
+  assert.strictEqual(Golf.setVenue(state, 'redmond').lastVenueId, 'redmond');
+  assert.strictEqual(state.lastVenueId, undefined, 'the input is not mutated');
+  assert.throws(() => Golf.setVenue(state, 'nope'), { message: /not in the list/ });
+});
+
+test('playableVenues keeps only venues with courses, in order', () => {
+  assert.deepStrictEqual(plain(Golf.playableVenues().map((v) => v.id)), ['redmond']);
+  const G = golfWithExtraVenues([{ id: 'empty', name: 'Empty', address: '', location: SEATTLE, courses: [] }]);
+  assert.deepStrictEqual(plain(G.playableVenues().map((v) => v.id)), ['redmond']);
+  const list = [
+    { id: 'a', name: 'A', courses: [] },
+    { id: 'b', name: 'B', courses: [{ id: 'b-1' }] },
+  ];
+  assert.deepStrictEqual(plain(G.playableVenues(list).map((v) => v.id)), ['b']);
+});
+
+test('nearestVenue ignores venues without courses by default, but not in an explicit list', () => {
+  const empty = { id: 'empty-here', name: 'Empty', address: '', location: REDMOND, courses: [] };
+  const G = golfWithExtraVenues([empty]);
+  assert.strictEqual(plain(G.nearestVenue(REDMOND).venue).id, 'redmond');
+  assert.strictEqual(plain(G.nearestVenue(REDMOND, [empty]).venue).id, 'empty-here');
+});
+
+test('newGame falls back to the default venue for a venue without courses, and setVenue rejects it', () => {
+  const G = golfWithExtraVenues([{ id: 'empty', name: 'Empty', address: '', location: SEATTLE, courses: [] }]);
+  let state = G.emptyState();
+  state = G.addPlayer(state, 'Sam', seeded(1), NOW);
+  state = G.setRoster(state, state.players.map((p) => p.id));
+  assert.strictEqual(plain(G.getActiveGame(G.newGame(state, seeded(5), NOW, 'empty'))).venueId, 'redmond');
+  assert.throws(() => G.setVenue(state, 'empty'), { message: /not in the list/ });
+  assert.throws(() => Golf.setVenue(state, 'flatstick-spokane'), { message: /not in the list/ });
+});
+
+test('playerHistory: default venue courses, plus other courses only where the player has finished rounds', () => {
+  const G = golfWithExtraVenues([{
+    id: 'elsewhere', name: 'Elsewhere', address: 'Somewhere', location: SEATTLE,
+    courses: [{ id: 'elsewhere-mini', name: 'Mini', holes: 2, par: null,
+      lowerIsBetter: true, keys: [1, 2, 3, 4, 5, 6, 7, 8] }],
+  }]);
+  let state = G.emptyState();
+  state = G.addPlayer(state, 'Sam', seeded(1), NOW);
+  state = G.addPlayer(state, 'Adam', seeded(2), NOW);
+  state = G.setRoster(state, state.players.map((p) => p.id));
+  const [sam, adam] = state.players.map((p) => p.id);
+  const courseIds = (s, pid) => plain(G.playerHistory(s, pid).map((r) => r.courseId));
+  const home = ['redmond-mini', 'redmond-aces', 'redmond-duff'];
+  assert.deepStrictEqual(courseIds(state, sam), home);
+  let s = G.newGame(state, seeded(5), NOW, 'elsewhere');
+  const gameId = G.getActiveGame(s).id;
+  for (let cur = G.cursor(G.getGame(s, gameId)); cur; cur = G.cursor(G.getGame(s, gameId))) {
+    s = G.recordScore(s, gameId, cur.playerId === sam ? 3 : 4, DAY(1)); // no ties, so no playoff
+  }
+  assert.deepStrictEqual(courseIds(s, sam), [...home, 'elsewhere-mini']);
+  assert.strictEqual(plain(G.playerHistory(s, sam))[3].rounds, 1);
+  assert.deepStrictEqual(courseIds(s, adam), [...home, 'elsewhere-mini']);
+  assert.strictEqual(plain(G.playerHistory(s, adam))[3].rounds, 1);
+  // A player who never played there gets no extra rows.
+  const jo = G.addPlayer(s, 'Jo', seeded(3), NOW);
+  const joId = jo.players[jo.players.length - 1].id;
+  assert.deepStrictEqual(courseIds(jo, joId), home);
 });

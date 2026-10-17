@@ -134,7 +134,8 @@
 <p><span class="tag q">Decided</span> All three courses score 1–8, lower is better. On Mini Golf, 8 is the stroke cap: if you haven't holed out by stroke 8, you record an 8.</p>
 <p>Config lives in a single constant so another venue can be added later without touching logic: <span class="tag added">Added</span></p>
 <pre>const VENUES = [{
-  id: "redmond", name: "Redmond",
+  id: "redmond", name: "Flatstick Redmond",
+  address: "Redmond, WA", location: { lat: 47.67395, lng: -122.12285 },
   courses: [
     { id: "redmond-mini",  name: "Mini Golf",   holes: 9, par: [3,3,3,3,3,3,3,3,3],
       lowerIsBetter: true, keys: [1,2,3,4,5,6,7,8] },
@@ -148,8 +149,12 @@
   <li><code>id</code>s are permanent: records and percentiles are keyed by course id, so renaming a course keeps its history. If a course's layout really changes, give it a new id.</li>
   <li><code>lowerIsBetter</code> controls winner, turn order, records and percentiles for that course.</li>
   <li><code>keys</code> are the 8 values on the numpad (the 9th key is always <strong>S</strong>). All Redmond courses use 1–8. The setting exists so a future venue can use different values.</li>
-  <li>With only one venue, there is no venue picker. A picker appears only when <code>VENUES.length &gt; 1</code>.</li>
+  <li>With only one venue, there is no venue picker. A picker appears only when there are more than one venue with courses. <span class="tag added">Added</span></li>
+  <li><code>address</code> is a display string. <code>location</code> is <code>{ lat, lng }</code> in decimal degrees. A venue without <code>location</code> is never matched by position.</li>
+  <li>Venues: Flatstick Redmond (three courses), then Flatstick Kirkland, Pioneer Square, South Lake Union, Woodinville and Spokane, Willows Run (Rainbow Run) and Desert Canyon, all with no courses yet. A venue without courses is hidden from the picker and geolocation, and cannot start a game, until courses are added. <span class="tag added">Added</span></li>
 </ul>
+<p>The picker is a list of venue names with their addresses, on the setup screen (where Start game is). The venue chosen is saved as <code>lastVenueId</code> and is the one preselected next time. A game starts at the chosen venue, and its courses come from that venue. <span class="tag added">Added</span></p>
+<p>Location preselects the picker, and only when the picker is shown. When setup opens and the browser can give a position (secure context only), the app asks once for a position, with a short timeout and a cached position up to 5 minutes old. The nearest venue within <strong>1&nbsp;km</strong> of that position is preselected, and a hint reads "📍 You're at <em>Venue</em>". On denial, error, timeout, no venue within 1&nbsp;km, or a missing API, nothing changes and the saved or default venue stays selected. The location request never blocks the screen. A pick made by hand before the answer arrives is kept. A preselection from location is not saved until a game starts. <span class="tag added">Added</span></p>
 
 <!-- ============================================================ -->
 <h2 id="flow">3. Screens &amp; flow</h2>
@@ -395,6 +400,7 @@ Course wins: Sam 2, Adam 1
   schemaVersion: 1,
   players: [ { id, name, color, hidden: false, createdAt } ],
   lastRoster: [playerId, ...],          // "playing today"
+  lastVenueId: "redmond" | null,        // optional: absent in older saves, treated as null
   currentGameId: "g_..." | null,
   lastExportAt: ISO | null,
   games: [{
@@ -482,6 +488,7 @@ Course wins: Sam 2, Adam 1
   <tr><td>5</td><td>Percentile population</td><td>Both personal and all players (§8.1).</td></tr>
   <tr><td>6</td><td>Hosting</td><td>GitHub Pages, once a remote exists (§11).</td></tr>
   <tr><td>7</td><td>Session winner</td><td>Most course wins. Course ties are broken by sudden-death playoff holes starting at hole 1 (§7.1).</td></tr>
+  <tr><td>8</td><td>Venue choice and location</td><td>Picker on setup, shown only with more than one venue. Location preselects the venue within 1&nbsp;km, asked once per visit, never blocking. Last pick saved as <code>lastVenueId</code>, no schema bump (§2, §10).</td></tr>
 </table>
 <p>No open questions remain.</p>
 
